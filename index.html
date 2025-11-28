@@ -1,1066 +1,1048 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { initializeApp } from 'firebase/app';
-import { 
-  getAuth, 
-  signInWithEmailAndPassword, 
-  createUserWithEmailAndPassword, 
-  updateProfile, 
-  onAuthStateChanged,
-  signOut,
-  signInWithCustomToken
-} from 'firebase/auth';
-import { 
-  getFirestore, 
-  doc, 
-  setDoc, 
-  collection, 
-  query, 
-  where, 
-  onSnapshot, 
-  getDocs, 
-  addDoc, 
-  serverTimestamp,
-  orderBy,
-  limit
-} from 'firebase/firestore';
-import { 
-  LogOut, 
-  Droplets, 
-  User, 
-  Lock, 
-  ArrowRight, 
-  Sparkles, 
-  Mail, 
-  Settings, 
-  MessageSquare, 
-  Users, 
-  Search, 
-  Plus, 
-  Send,
-  CornerDownLeft,
-  ChevronLeft
-} from 'lucide-react';
-import { motion, AnimatePresence } from 'framer-motion';
-
-// --- КОНФИГУРАЦИЯ FIREBASE & INIT ---
-const getFirebaseConfig = () => {
-  if (typeof __firebase_config !== 'undefined') {
-    return JSON.parse(__firebase_config);
-  } else {
-    return {}; 
-  }
-};
-
-const app = initializeApp(getFirebaseConfig());
-const auth = getAuth(app);
-const db = getFirestore(app);
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'liquid-mess-default';
-
-// Utility function to generate a consistent 1-on-1 chat ID
-const getPrivateChatId = (uid1, uid2) => {
-  const sortedUids = [uid1, uid2].sort();
-  return sortedUids.join('_');
-};
-
-// --- СЛУЖЕБНЫЕ ФУНКЦИИ FIREBASE ---
-
-// 1. Индексация никнейма для поиска
-const indexUserMetadata = async (user) => {
-  if (!user || !user.displayName) return;
-  const userRef = doc(db, 'artifacts', appId, 'public', 'data', 'users_metadata', user.uid);
-  try {
-    await setDoc(userRef, {
-      uid: user.uid,
-      nickname: user.displayName.toLowerCase(), // Храним в нижнем регистре для поиска
-      originalNickname: user.displayName,
-      email: user.email,
-    }, { merge: true });
-  } catch (e) {
-    console.error("Ошибка индексации пользователя: ", e);
-  }
-};
-
-// 2. Создание 1-на-1 чата (если не существует)
-const createOrNavigateToPrivateChat = async (currentUser, targetUser) => {
-    const chatId = getPrivateChatId(currentUser.uid, targetUser.uid);
-    const chatRef = doc(db, 'artifacts', appId, 'public', 'data', 'chats', chatId);
-    
-    // Создаем метаданные чата (включая имя)
-    await setDoc(chatRef, {
-        id: chatId,
-        type: 'private',
-        members: [currentUser.uid, targetUser.uid],
-        memberNames: {
-            [currentUser.uid]: currentUser.displayName,
-            [targetUser.uid]: targetUser.originalNickname // Используем оригинальный ник из поиска
-        },
-        lastMessage: '',
-        updatedAt: serverTimestamp(),
-    }, { merge: true });
-
-    return { id: chatId, type: 'private', name: targetUser.originalNickname, targetId: targetUser.uid };
-};
-
-
-// --- ВСПОМОГАТЕЛЬНЫЕ КОМПОНЕНТЫ UI ---
-
-// Анимированный фон
-const LiquidBackground = () => (
-  <div className="fixed inset-0 overflow-hidden bg-slate-900 -z-10">
-    <motion.div 
-      animate={{ 
-        x: [0, 100, -50, 0], 
-        y: [0, -50, 100, 0], 
-        scale: [1, 1.2, 0.8, 1] 
-      }}
-      transition={{ duration: 20, repeat: Infinity, ease: "linear" }}
-      className="absolute top-[-10%] left-[-10%] w-[500px] h-[500px] bg-purple-600 rounded-full mix-blend-multiply filter blur-[100px] opacity-70"
-    />
-    <motion.div 
-      animate={{ 
-        x: [0, -100, 50, 0], 
-        y: [0, 100, -50, 0], 
-        scale: [1, 1.5, 0.9, 1] 
-      }}
-      transition={{ duration: 15, repeat: Infinity, ease: "linear" }}
-      className="absolute top-[20%] right-[-10%] w-[400px] h-[400px] bg-blue-600 rounded-full mix-blend-multiply filter blur-[100px] opacity-70"
-    />
-    <motion.div 
-      animate={{ 
-        x: [0, 50, -100, 0], 
-        y: [0, -100, 50, 0], 
-        scale: [1, 0.8, 1.2, 1] 
-      }}
-      transition={{ duration: 18, repeat: Infinity, ease: "linear" }}
-      className="absolute bottom-[-10%] left-[20%] w-[600px] h-[600px] bg-pink-600 rounded-full mix-blend-multiply filter blur-[100px] opacity-70"
-    />
-  </div>
-);
-
-// --- ЭКРАНЫ ---
-
-// Модальное окно для установки/смены Никнейма
-const NicknameSetupScreen = ({ user, tempNickname, onError, onClose, onNicknameChange }) => {
-  const [nickname, setNickname] = useState(user.displayName || tempNickname || '');
-  const [loading, setLoading] = useState(false);
-  const isSetup = !user.displayName; 
-
-  const handleSetup = async (e) => {
-    e.preventDefault();
-    const finalNickname = nickname.trim();
-    
-    if (!finalNickname) {
-      onError("Пожалуйста, придумайте никнейм.");
-      return;
-    }
-
-    setLoading(true);
-    onError('');
-
-    try {
-      await updateProfile(user, { displayName: finalNickname });
-      await indexUserMetadata(user); // Обновление индекса после смены
-      if (onNicknameChange) onNicknameChange();
-      onClose(); 
-    } catch (err) {
-      console.error(err);
-      onError("Ошибка сохранения никнейма. Попробуйте снова.");
-    } finally {
-      setLoading(false);
-    }
-  };
-  
-  return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center p-4 z-50" onClick={isSetup ? null : onClose}>
-      <motion.div 
-        key="setup-nickname"
-        initial={{ opacity: 0, scale: 0.9 }}
-        animate={{ opacity: 1, scale: 1 }}
-        exit={{ opacity: 0, scale: 0.9 }}
-        className="w-full max-w-md bg-slate-900/90 backdrop-blur-xl border border-white/20 p-8 rounded-3xl shadow-2xl relative overflow-hidden"
-        onClick={(e) => e.stopPropagation()} 
-      >
-        <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-yellow-500 via-pink-500 to-red-500" />
-        
-        <div className="flex flex-col items-center mb-8">
-          <Settings size={40} className="text-white mb-2" />
-          <h1 className="text-2xl font-bold text-white tracking-tight">
-            {isSetup ? "Придумайте Никнейм" : "Изменить Никнейм"}
-          </h1>
-          <p className="text-blue-200 mt-2 text-sm uppercase tracking-widest opacity-80">
-            {isSetup ? "Обязательный шаг для начала" : "Ваши настройки профиля"}
-          </p>
-        </div>
-
-        <form onSubmit={handleSetup} className="space-y-6">
-            <div className="relative group">
-                <User className="absolute left-4 top-1/2 -translate-y-1/2 text-white/50 group-focus-within:text-white transition-colors" size={20} />
-                <input
-                    type="text"
-                    placeholder="Ваш Никнейм"
-                    value={nickname}
-                    onChange={(e) => setNickname(e.target.value)}
-                    className="w-full bg-black/20 border border-white/10 rounded-2xl py-4 pl-12 pr-4 text-white placeholder-white/30 focus:outline-none focus:bg-black/30 focus:border-white/30 transition-all"
-                    required
-                />
-            </div>
-            
-            <div className="text-red-300 text-sm text-center h-5">{onError}</div> 
-
-            <button
-                type="submit"
-                disabled={loading}
-                className="w-full bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 text-white font-bold py-4 rounded-2xl shadow-lg shadow-purple-500/30 transition-all transform hover:scale-[1.02] active:scale-[0.98] flex items-center justify-center gap-2"
-            >
-                {loading ? <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : (
-                    <>
-                        {isSetup ? "Сохранить и войти" : "Сохранить изменения"} <Sparkles size={20} />
-                    </>
-                )}
-            </button>
-            {!isSetup && (
-              <button
-                type="button"
-                onClick={onClose}
-                className="w-full text-white/70 hover:text-white mt-2 p-2 transition-colors"
-              >
-                Отмена
-              </button>
-            )}
-        </form>
-      </motion.div>
-    </div>
-  );
-};
-
-// Экран входа/регистрации (Добро пожаловать)
-const AuthScreen = () => {
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [nickname, setNickname] = useState(''); 
-  const [error, setError] = useState('');
-  const [loading, setLoading] = useState(false);
-
-  // Логика попытки регистрации
-  const attemptRegistration = async () => {
-    const finalNickname = nickname.trim();
-    if (!finalNickname) {
-      setError("Аккаунт не найден. Для регистрации придумайте никнейм.");
-      throw new Error("Missing nickname for registration");
-    }
-    
-    try {
-      const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-      // Устанавливаем никнейм сразу после регистрации
-      await updateProfile(userCredential.user, { displayName: finalNickname });
-      await indexUserMetadata(userCredential.user); // Индексируем нового пользователя
-    } catch (err) {
-      console.error(err);
-      let msg = "Ошибка регистрации.";
-      if (err.code === 'auth/email-already-in-use') msg = "Эта почта уже занята!";
-      if (err.code === 'auth/weak-password') msg = "Пароль слишком простой (мин. 6 символов).";
-      if (err.code === 'auth/operation-not-allowed') msg = "Ошибка: Email/Password вход не включен в настройках Firebase.";
-      setError(msg);
-      throw err; 
-    }
-  };
-
-  // Логика основной формы (вход или регистрация)
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setError('');
-    setLoading(true);
-
-    try {
-      // 1. Попытка входа
-      const userCredential = await signInWithEmailAndPassword(auth, email, password);
-      await indexUserMetadata(userCredential.user); // Обновляем индекс при входе
-      
-    } catch (err) {
-      // 2. Если вход не удался - пробуем зарегистрировать
-      if (err.code === 'auth/user-not-found' || err.code === 'auth/invalid-credential') {
-        try {
-          await attemptRegistration();
-        } catch (regError) {
-          // Ошибки регистрации уже обработаны внутри attemptRegistration
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Liquid Mess - Чат</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        /* Настройка шрифта Inter */
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0F172A; /* Slate-900 */
         }
-      } else {
-        // Другие ошибки
-        console.error(err);
-        let msg = "Ошибка входа.";
-        if (err.code === 'auth/wrong-password') msg = "Неверный пароль.";
-        if (err.code === 'auth/invalid-email') msg = "Некорректный формат почты.";
-        if (err.code === 'auth/operation-not-allowed') msg = "Ошибка: Email/Password вход не включен в настройках Firebase.";
-        setError(msg);
-      }
-    } finally {
-      setLoading(false);
-    }
-  };
+        /* Кастомный скроллбар для стилизации под темный фон */
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 6px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 10px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 10px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+            background: rgba(255, 255, 255, 0.3);
+        }
+    </style>
+</head>
+<body class="min-h-screen">
 
-  return (
-    <div className="flex items-center justify-center min-h-screen p-4">
-        <motion.div 
-            key="login-form"
-            initial={{ opacity: 0, scale: 0.9 }}
-            animate={{ opacity: 1, scale: 1 }}
-            exit={{ opacity: 0, scale: 0.9 }}
-            className="w-full max-w-md bg-white/10 backdrop-blur-xl border border-white/20 p-8 rounded-3xl shadow-2xl relative overflow-hidden"
-          >
-            <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-purple-500 via-pink-500 to-blue-500" />
-            
-            <div className="flex flex-col items-center mb-8">
-              <div className="bg-white/20 p-4 rounded-full mb-4 shadow-inner ring-1 ring-white/30">
-                <Droplets size={40} className="text-white" />
-              </div>
-              <h1 className="text-4xl font-bold text-white tracking-tight">Liquid Mess</h1>
-              <p className="text-blue-200 mt-2 text-sm uppercase tracking-widest opacity-80">
-                Добро пожаловать! Войдите или Зарегистрируйтесь
-              </p>
-            </div>
-
-            <form onSubmit={handleSubmit} className="space-y-4">
-              
-              <div className="relative group">
-                <Mail className="absolute left-4 top-1/2 -translate-y-1/2 text-white/50 group-focus-within:text-white transition-colors" size={20} />
-                <input
-                  type="email"
-                  placeholder="Email (почта)"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  className="w-full bg-black/20 border border-white/10 rounded-2xl py-4 pl-12 pr-4 text-white placeholder-white/30 focus:outline-none focus:bg-black/30 focus:border-white/30 transition-all"
-                  required
-                />
-              </div>
-
-              <div className="relative group">
-                <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-white/50 group-focus-within:text-white transition-colors" size={20} />
-                <input
-                  type="password"
-                  placeholder="Пароль"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="w-full bg-black/20 border border-white/10 rounded-2xl py-4 pl-12 pr-4 text-white placeholder-white/30 focus:outline-none focus:bg-black/30 focus:border-white/30 transition-all"
-                  required
-                />
-              </div>
-              
-              <div className="relative group">
-                <User className="absolute left-4 top-1/2 -translate-y-1/2 text-white/50 group-focus-within:text-white transition-colors" size={20} />
-                <input
-                  type="text"
-                  placeholder="Никнейм (только для регистрации)"
-                  value={nickname}
-                  onChange={(e) => setNickname(e.target.value)}
-                  className="w-full bg-black/20 border border-white/10 rounded-2xl py-4 pl-12 pr-4 text-white placeholder-white/30 focus:outline-none focus:bg-black/30 focus:border-white/30 transition-all"
-                />
-              </div>
-
-              {error && (
-                <motion.div 
-                  initial={{ opacity: 0, y: -10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  className="text-red-300 text-sm text-center bg-red-500/20 py-2 rounded-lg border border-red-500/30"
-                >
-                  {error}
-                </motion.div>
-              )}
-
-              <button
-                type="submit"
-                disabled={loading}
-                className="w-full mt-4 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 text-white font-bold py-4 rounded-2xl shadow-lg shadow-purple-500/30 transition-all transform hover:scale-[1.02] active:scale-[0.98] flex items-center justify-center gap-2"
-              >
-                {loading ? <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : (
-                  <>
-                    Войти или Зарегистрироваться <ArrowRight size={20} />
-                  </>
-                )}
-              </button>
-            </form>
-        </motion.div>
-    </div>
-  );
-};
-
-// Экран приветствия после входа (с кнопкой "Войти" в чаты)
-const WelcomeUserScreen = ({ user, setScreen, setShowSettings }) => {
-  return (
-    <div className="flex items-center justify-center min-h-screen p-4">
-      <motion.div 
-        key="welcome-user"
-        initial={{ opacity: 0, scale: 0.9 }}
-        animate={{ opacity: 1, scale: 1 }}
-        exit={{ opacity: 0, scale: 0.9 }}
-        className="w-full max-w-md bg-white/10 backdrop-blur-xl border border-white/20 p-10 rounded-3xl shadow-2xl relative text-center"
-      >
-        <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-green-400 via-cyan-400 to-blue-400" />
-
-        <div className="flex flex-col items-center mb-8">
-            <div className="w-16 h-16 rounded-full bg-gradient-to-tr from-cyan-400 to-blue-500 flex items-center justify-center text-white font-extrabold text-3xl shadow-xl mb-4">
-                {(user.displayName?.[0] || user.email?.[0])?.toUpperCase()}
-            </div>
-            <h1 className="text-3xl font-bold text-white tracking-tight">
-                Добро пожаловать, {user.displayName}!
-            </h1>
-            <p className="text-blue-200 mt-2 text-base">
-                Вы успешно авторизованы.
-            </p>
+    <div id="app-container" class="relative min-h-screen">
+        <!-- Анимированный фон (LiquidBackground) -->
+        <div id="liquid-bg" class="fixed inset-0 overflow-hidden -z-10"></div>
+        
+        <!-- Основное содержимое будет рендериться здесь -->
+        <div id="main-content" class="relative z-10">
+            <!-- Экраны будут заменены JavaScript'ом -->
         </div>
-
-        <div className='flex flex-col gap-3 mt-6'>
-          {/* Кнопка "Войти" в чаты */}
-          <button 
-            onClick={() => setScreen('chatList')}
-            className="w-full bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 text-white font-bold py-3 rounded-xl shadow-lg shadow-purple-500/30 transition-all transform hover:scale-[1.01] active:scale-[0.99] flex items-center justify-center gap-2"
-            title="Войти в список чатов"
-          >
-            Войти <ArrowRight size={20} />
-          </button>
-
-          {/* Кнопка "Настройки" */}
-          <button 
-            onClick={() => setShowSettings(true)}
-            className="w-full bg-slate-700/50 hover:bg-slate-700/80 text-white font-semibold py-3 rounded-xl transition-all flex items-center justify-center gap-2 border border-white/10"
-            title="Настройки профиля"
-          >
-            <Settings size={20} /> Настройки (Сменить Никнейм)
-          </button>
-          
-          {/* Кнопка "Выход" */}
-          <button 
-            onClick={() => signOut(auth)}
-            className="w-full bg-red-600 hover:bg-red-500 text-white font-bold py-3 rounded-xl shadow-lg shadow-red-500/30 transition-all flex items-center justify-center gap-2"
-            title="Выход"
-          >
-            <LogOut size={20} /> Выход
-          </button>
-        </div>
-      </motion.div>
     </div>
-  );
-};
 
-// Экран для отображения сообщений в выбранном чате
-const ChatScreen = ({ chat, currentUser, setChat }) => {
-    const [messages, setMessages] = useState([]);
-    const [newMessage, setNewMessage] = useState('');
-    const messagesEndRef = useRef(null);
+    <!-- Firebase SDK Imports -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { 
+            getAuth, 
+            signInAnonymously, 
+            signInWithCustomToken, 
+            onAuthStateChanged,
+            signInWithEmailAndPassword,
+            createUserWithEmailAndPassword,
+            updateProfile,
+            signOut 
+        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { 
+            getFirestore, 
+            doc, 
+            setDoc, 
+            collection, 
+            query, 
+            where, 
+            onSnapshot, 
+            addDoc, 
+            serverTimestamp,
+            orderBy,
+            limit,
+            getDocs
+        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-    // Подписка на сообщения
-    useEffect(() => {
-        if (!chat || !db) return;
+        // --- GLOBAL VARIABLES (Provided by Canvas) ---
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'liquid-mess-default';
+        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
-        const messagesRef = collection(db, 'artifacts', appId, 'public', 'data', 'chats', chat.id, 'messages');
-        const q = query(messagesRef, orderBy('createdAt'), limit(100)); // Загружаем последние 100
+        // --- FIREBASE INITIALIZATION ---
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
 
-        const unsubscribe = onSnapshot(q, (snapshot) => {
-            const msgs = [];
-            snapshot.forEach(doc => msgs.push({ ...doc.data(), id: doc.id }));
-            setMessages(msgs);
-        }, (error) => {
-            console.error("Ошибка получения сообщений:", error);
-        });
+        // --- GLOBAL STATE ---
+        let currentUser = null;
+        let currentScreen = 'auth'; // 'auth', 'welcome', 'chatList', 'chat'
+        let activeChat = null; // { id, name, type, targetId }
+        let currentUserId = null;
+        let isAuthReady = false;
 
-        return () => unsubscribe();
-    }, [chat]);
+        const mainContent = document.getElementById('main-content');
+        
+        // --- UTILS ---
 
-    // Скролл вниз при получении новых сообщений
-    useEffect(() => {
-        messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-    }, [messages]);
-
-    // Отправка сообщения
-    const handleSendMessage = async (e) => {
-        e.preventDefault();
-        if (!newMessage.trim() || !chat) return;
-
-        const messageText = newMessage.trim();
-        setNewMessage('');
-
-        const messageData = {
-            text: messageText,
-            createdAt: serverTimestamp(),
-            senderId: currentUser.uid,
-            senderName: currentUser.displayName,
+        // Создание элемента с атрибутами и классами
+        const createElement = (tag, attributes = {}, classes = [], content = '') => {
+            const el = document.createElement(tag);
+            Object.entries(attributes).forEach(([key, value]) => el.setAttribute(key, value));
+            if (classes.length > 0) el.className = classes.join(' ');
+            if (content) el.innerHTML = content;
+            return el;
+        };
+        
+        // Создание SVG-иконки
+        const createIcon = (name, size = 20, classes = []) => {
+            const svg = lucide.createIcons()[name];
+            if (!svg) return createElement('span', {}, [], name);
+            const span = createElement('span', { 'data-lucide': name }, classes, svg.toSvg({ width: size, height: size }));
+            return span;
         };
 
-        try {
-            const messagesRef = collection(db, 'artifacts', appId, 'public', 'data', 'chats', chat.id, 'messages');
-            await addDoc(messagesRef, messageData);
-
-            // Обновляем метаданные чата
-            const chatRef = doc(db, 'artifacts', appId, 'public', 'data', 'chats', chat.id);
-            await setDoc(chatRef, {
-                lastMessage: messageText,
-                updatedAt: serverTimestamp(),
-            }, { merge: true });
-
-        } catch (error) {
-            console.error("Ошибка отправки сообщения:", error);
-        }
-    };
-    
-    // Получение имени собеседника
-    const chatName = useMemo(() => {
-        if (chat.type === 'private') {
-            return chat.memberNames[chat.targetId] || 'Собеседник';
-        }
-        return chat.name;
-    }, [chat]);
-
-    return (
-        <div className="flex flex-col h-screen max-w-4xl mx-auto md:p-6">
-            <motion.div 
-                initial={{ x: '100%' }}
-                animate={{ x: 0 }}
-                exit={{ x: '100%' }}
-                transition={{ type: "tween", duration: 0.3 }}
-                className="flex-1 bg-black/40 md:bg-white/5 md:backdrop-blur-xl md:border md:border-white/10 md:rounded-3xl flex flex-col overflow-hidden relative shadow-2xl"
-            >
-                {/* Хедер чата */}
-                <div className="p-4 border-b border-white/10 bg-white/5 backdrop-blur-md sticky top-0 z-10 flex items-center">
-                    <button onClick={() => setChat(null)} className="p-2 hover:bg-white/10 rounded-full text-white/80 transition-colors mr-3">
-                        <ChevronLeft size={24} />
-                    </button>
-                    <div className="flex flex-col">
-                        <h2 className="text-white font-bold">{chatName}</h2>
-                        <span className="text-xs text-white/50">{chat.type === 'private' ? 'Личный чат' : 'Групповой чат'}</span>
-                    </div>
-                </div>
-
-                {/* Сообщения */}
-                <div className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar">
-                    {messages.map((msg) => (
-                        <div key={msg.id} className={`flex ${msg.senderId === currentUser.uid ? 'justify-end' : 'justify-start'}`}>
-                            <div 
-                                className={`max-w-[80%] p-3 rounded-xl shadow-lg ${
-                                    msg.senderId === currentUser.uid 
-                                        ? 'bg-purple-600 text-white rounded-br-none' 
-                                        : 'bg-slate-700/50 text-white rounded-tl-none'
-                                }`}
-                            >
-                                {msg.senderId !== currentUser.uid && (
-                                    <div className="font-semibold text-xs mb-1 text-purple-200">
-                                        {msg.senderName || 'Неизвестный'}
-                                    </div>
-                                )}
-                                <p className="text-sm whitespace-pre-wrap">{msg.text}</p>
-                                <span className="block text-right text-[10px] opacity-60 mt-1">
-                                    {msg.createdAt?.toDate ? msg.createdAt.toDate().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) : '...'}
-                                </span>
-                            </div>
-                        </div>
-                    ))}
-                    <div ref={messagesEndRef} />
-                </div>
-
-                {/* Ввод сообщения */}
-                <form onSubmit={handleSendMessage} className="p-4 bg-white/5 border-t border-white/10 flex">
-                    <input
-                        type="text"
-                        value={newMessage}
-                        onChange={(e) => setNewMessage(e.target.value)}
-                        placeholder="Введите сообщение..."
-                        className="flex-1 bg-black/20 border border-white/10 text-white placeholder-white/30 rounded-l-xl p-4 focus:outline-none focus:bg-black/40 focus:border-purple-500/50 transition-all"
-                    />
-                    <button
-                        type="submit"
-                        disabled={!newMessage.trim()}
-                        className="bg-purple-600 hover:bg-purple-500 text-white font-bold px-6 rounded-r-xl shadow-lg shadow-purple-500/30 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
-                    >
-                        <Send size={20} />
-                    </button>
-                </form>
-            </motion.div>
-        </div>
-    );
-};
-
-// Модальное окно создания группы
-const CreateGroupModal = ({ currentUser, existingChats, onClose }) => {
-    const [groupName, setGroupName] = useState('');
-    const [selectedFriends, setSelectedFriends] = useState([]);
-    const [loading, setLoading] = useState(false);
-    const [error, setError] = useState('');
-
-    const handleCreateGroup = async (e) => {
-        e.preventDefault();
-        if (!groupName.trim()) {
-            setError("Введите название группы.");
-            return;
-        }
-
-        setLoading(true);
-        setError('');
-
-        const finalName = groupName.trim();
-        const initialMembers = [currentUser.uid];
+        // Запуск анимации Liquid Background
+        const setupLiquidBackground = () => {
+            const bg = document.getElementById('liquid-bg');
+            bg.innerHTML = `
+                <div class="absolute top-[-10%] left-[-10%] w-[500px] h-[500px] bg-purple-600 rounded-full mix-blend-multiply filter blur-[100px] opacity-70 animate-blob1"></div>
+                <div class="absolute top-[20%] right-[-10%] w-[400px] h-[400px] bg-blue-600 rounded-full mix-blend-multiply filter blur-[100px] opacity-70 animate-blob2"></div>
+                <div class="absolute bottom-[-10%] left-[20%] w-[600px] h-[600px] bg-pink-600 rounded-full mix-blend-multiply filter blur-[100px] opacity-70 animate-blob3"></div>
+            `;
+            const style = document.createElement('style');
+            style.innerHTML = `
+                @keyframes blob1 {
+                    0%, 100% { transform: translate(0px, 0px) scale(1); }
+                    33% { transform: translate(100px, -50px) scale(1.2); }
+                    66% { transform: translate(-50px, 100px) scale(0.8); }
+                }
+                @keyframes blob2 {
+                    0%, 100% { transform: translate(0px, 0px) scale(1); }
+                    33% { transform: translate(-100px, 100px) scale(1.5); }
+                    66% { transform: translate(50px, -50px) scale(0.9); }
+                }
+                @keyframes blob3 {
+                    0%, 100% { transform: translate(0px, 0px) scale(1); }
+                    33% { transform: translate(50px, -100px) scale(0.8); }
+                    66% { transform: translate(-100px, 50px) scale(1.2); }
+                }
+                .animate-blob1 { animation: blob1 20s infinite linear; }
+                .animate-blob2 { animation: blob2 15s infinite linear; }
+                .animate-blob3 { animation: blob3 18s infinite linear; }
+            `;
+            document.head.appendChild(style);
+        };
         
-        // ВАЖНО: Согласно требованию, группа появляется ТОЛЬКО у создателя, 
-        // поэтому мы добавляем только его, даже если он выбрал друзей.
-        // Друзей можно будет добавить позже в UI чата, если они были выбраны.
+        // Генерация ID для приватного чата
+        const getPrivateChatId = (uid1, uid2) => {
+            return [uid1, uid2].sort().join('_');
+        };
 
-        try {
-            const groupMetadata = {
-                name: finalName,
-                type: 'group',
-                creatorId: currentUser.uid,
-                members: initialMembers, // Только создатель
+        // Индексация метаданных пользователя для поиска
+        const indexUserMetadata = async (user) => {
+            if (!user || !user.displayName) return;
+            const userRef = doc(db, 'artifacts', appId, 'public', 'data', 'users_metadata', user.uid);
+            try {
+                await setDoc(userRef, {
+                    uid: user.uid,
+                    nickname: user.displayName.toLowerCase(),
+                    originalNickname: user.displayName,
+                    email: user.email,
+                }, { merge: true });
+            } catch (e) {
+                console.error("Ошибка индексации пользователя:", e);
+            }
+        };
+
+        // --- STATE MANAGEMENT & RENDERING ---
+
+        const navigateTo = (screen, chat = null) => {
+            currentScreen = screen;
+            activeChat = chat;
+            renderApp();
+        };
+
+        const updateCurrentUser = (user) => {
+            currentUser = user;
+            currentUserId = user ? user.uid : null;
+            if (user && !user.displayName) {
+                showNicknameSetupModal(true);
+            }
+        };
+
+        const renderApp = () => {
+            mainContent.innerHTML = '';
+            
+            if (!isAuthReady) {
+                mainContent.appendChild(renderLoading());
+                return;
+            }
+
+            if (!currentUser) {
+                mainContent.appendChild(renderAuthScreen());
+            } else if (!currentUser.displayName) {
+                // Если нет никнейма, принудительно показываем модалку
+                mainContent.appendChild(renderNicknameSetupModal(true));
+            } else if (activeChat) {
+                mainContent.appendChild(renderChatScreen());
+            } else if (currentScreen === 'chatList') {
+                mainContent.appendChild(renderChatListScreen());
+            } else {
+                // 'welcome' screen
+                mainContent.appendChild(renderWelcomeScreen());
+            }
+        };
+
+        // --- AUTH LOGIC ---
+
+        const handleAuthSubmit = async (e) => {
+            e.preventDefault();
+            const form = e.target;
+            const email = form.email.value;
+            const password = form.password.value;
+            const nickname = form.nickname.value;
+            const errorElement = document.getElementById('auth-error');
+            
+            errorElement.innerHTML = '';
+            const submitButton = form.querySelector('button[type="submit"]');
+            submitButton.disabled = true;
+            submitButton.innerHTML = `<div class="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>`;
+
+            try {
+                // 1. Попытка входа
+                const userCredential = await signInWithEmailAndPassword(auth, email, password);
+                await indexUserMetadata(userCredential.user);
+                
+            } catch (err) {
+                // 2. Если вход не удался (user-not-found, invalid-credential) - пробуем зарегистрировать
+                if (err.code === 'auth/user-not-found' || err.code === 'auth/invalid-credential') {
+                    if (!nickname.trim()) {
+                        errorElement.innerHTML = "Аккаунт не найден. Для регистрации придумайте никнейм.";
+                        return; // Прерываем выполнение
+                    }
+
+                    try {
+                        const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+                        await updateProfile(userCredential.user, { displayName: nickname.trim() });
+                        await indexUserMetadata(userCredential.user);
+                    } catch (regError) {
+                        let msg = "Ошибка регистрации.";
+                        if (regError.code === 'auth/email-already-in-use') msg = "Эта почта уже занята!";
+                        if (regError.code === 'auth/weak-password') msg = "Пароль слишком простой (мин. 6 символов).";
+                        if (regError.code === 'auth/operation-not-allowed') msg = "Ошибка: Email/Password вход не включен в настройках Firebase.";
+                        errorElement.innerHTML = msg;
+                    }
+                } else {
+                    // Другие ошибки входа
+                    let msg = "Ошибка входа.";
+                    if (err.code === 'auth/wrong-password') msg = "Неверный пароль.";
+                    if (err.code === 'auth/invalid-email') msg = "Некорректный формат почты.";
+                    if (err.code === 'auth/operation-not-allowed') msg = "Ошибка: Email/Password вход не включен в настройках Firebase.";
+                    errorElement.innerHTML = msg;
+                }
+            } finally {
+                submitButton.disabled = false;
+                submitButton.innerHTML = `Войти или Зарегистрироваться ${createIcon('ArrowRight', 20).outerHTML}`;
+            }
+        };
+
+        // --- UI SCREENS ---
+
+        const renderLoading = () => {
+            const div = createElement('div', {}, ['h-screen', 'w-screen', 'flex', 'items-center', 'justify-center', 'text-white']);
+            div.innerHTML = `<div class="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-purple-500"></div>`;
+            return div;
+        };
+
+        const renderAuthScreen = () => {
+            const container = createElement('div', {}, ['flex', 'items-center', 'justify-center', 'min-h-screen', 'p-4']);
+            const card = createElement('div', {}, [
+                'w-full', 'max-w-md', 'bg-white/10', 'backdrop-blur-xl', 'border', 
+                'border-white/20', 'p-8', 'rounded-3xl', 'shadow-2xl', 'relative', 'overflow-hidden'
+            ]);
+
+            card.innerHTML = `
+                <div class="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-purple-500 via-pink-500 to-blue-500"></div>
+                
+                <div class="flex flex-col items-center mb-8">
+                    <div class="bg-white/20 p-4 rounded-full mb-4 shadow-inner ring-1 ring-white/30">
+                        ${createIcon('Droplets', 40, ['text-white']).outerHTML}
+                    </div>
+                    <h1 class="text-4xl font-bold text-white tracking-tight">Liquid Mess</h1>
+                    <p class="text-blue-200 mt-2 text-sm uppercase tracking-widest opacity-80">
+                        Добро пожаловать! Войдите или Зарегистрируйтесь
+                    </p>
+                </div>
+
+                <form id="auth-form" class="space-y-4">
+                    <div class="relative group">
+                        ${createIcon('Mail', 20, ['absolute', 'left-4', 'top-1/2', '-translate-y-1/2', 'text-white/50', 'group-focus-within:text-white', 'transition-colors']).outerHTML}
+                        <input type="email" name="email" placeholder="Email (почта)" required
+                            class="w-full bg-black/20 border border-white/10 rounded-2xl py-4 pl-12 pr-4 text-white placeholder-white/30 focus:outline-none focus:bg-black/30 focus:border-white/30 transition-all"
+                        />
+                    </div>
+
+                    <div class="relative group">
+                        ${createIcon('Lock', 20, ['absolute', 'left-4', 'top-1/2', '-translate-y-1/2', 'text-white/50', 'group-focus-within:text-white', 'transition-colors']).outerHTML}
+                        <input type="password" name="password" placeholder="Пароль" required
+                            class="w-full bg-black/20 border border-white/10 rounded-2xl py-4 pl-12 pr-4 text-white placeholder-white/30 focus:outline-none focus:bg-black/30 focus:border-white/30 transition-all"
+                        />
+                    </div>
+                    
+                    <div class="relative group">
+                        ${createIcon('User', 20, ['absolute', 'left-4', 'top-1/2', '-translate-y-1/2', 'text-white/50', 'group-focus-within:text-white', 'transition-colors']).outerHTML}
+                        <input type="text" name="nickname" placeholder="Никнейм (только для регистрации)"
+                            class="w-full bg-black/20 border border-white/10 rounded-2xl py-4 pl-12 pr-4 text-white placeholder-white/30 focus:outline-none focus:bg-black/30 focus:border-white/30 transition-all"
+                        />
+                    </div>
+
+                    <div id="auth-error" class="text-red-300 text-sm text-center bg-red-500/20 py-2 rounded-lg border border-red-500/30 h-10 flex items-center justify-center"></div>
+
+                    <button type="submit"
+                        class="w-full mt-4 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 text-white font-bold py-4 rounded-2xl shadow-lg shadow-purple-500/30 transition-all transform hover:scale-[1.02] active:scale-[0.98] flex items-center justify-center gap-2"
+                    >
+                        Войти или Зарегистрироваться ${createIcon('ArrowRight', 20).outerHTML}
+                    </button>
+                    <p class="text-xs text-red-300 mt-3 text-center">
+                        * Если вы видите ошибку "auth/operation-not-allowed", включите вход по Email/Password в настройках Firebase.
+                    </p>
+                </form>
+            `;
+            container.appendChild(card);
+            card.querySelector('#auth-form').addEventListener('submit', handleAuthSubmit);
+            return container;
+        };
+
+        const renderWelcomeScreen = () => {
+            const container = createElement('div', {}, ['flex', 'items-center', 'justify-center', 'min-h-screen', 'p-4']);
+            const card = createElement('div', {}, [
+                'w-full', 'max-w-md', 'bg-white/10', 'backdrop-blur-xl', 'border', 
+                'border-white/20', 'p-10', 'rounded-3xl', 'shadow-2xl', 'relative', 'text-center'
+            ]);
+
+            const userInitial = (currentUser.displayName?.[0] || currentUser.email?.[0])?.toUpperCase() || '?';
+
+            card.innerHTML = `
+                <div class="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-green-400 via-cyan-400 to-blue-400"></div>
+
+                <div class="flex flex-col items-center mb-8">
+                    <div class="w-16 h-16 rounded-full bg-gradient-to-tr from-cyan-400 to-blue-500 flex items-center justify-center text-white font-extrabold text-3xl shadow-xl mb-4">
+                        ${userInitial}
+                    </div>
+                    <h1 class="text-3xl font-bold text-white tracking-tight">
+                        Добро пожаловать, ${currentUser.displayName}!
+                    </h1>
+                    <p class="text-blue-200 mt-2 text-base">
+                        Вы успешно авторизованы.
+                    </p>
+                </div>
+
+                <div class='flex flex-col gap-3 mt-6'>
+                    <button id="btn-enter-chats"
+                        class="w-full bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 text-white font-bold py-3 rounded-xl shadow-lg shadow-purple-500/30 transition-all transform hover:scale-[1.01] active:scale-[0.99] flex items-center justify-center gap-2"
+                    >
+                        Войти ${createIcon('ArrowRight', 20).outerHTML}
+                    </button>
+
+                    <button id="btn-show-settings"
+                        class="w-full bg-slate-700/50 hover:bg-slate-700/80 text-white font-semibold py-3 rounded-xl transition-all flex items-center justify-center gap-2 border border-white/10"
+                    >
+                        ${createIcon('Settings', 20).outerHTML} Настройки (Сменить Никнейм)
+                    </button>
+                    
+                    <button id="btn-logout"
+                        class="w-full bg-red-600 hover:bg-red-500 text-white font-bold py-3 rounded-xl shadow-lg shadow-red-500/30 transition-all flex items-center justify-center gap-2"
+                    >
+                        ${createIcon('LogOut', 20).outerHTML} Выход
+                    </button>
+                </div>
+            `;
+            container.appendChild(card);
+            card.querySelector('#btn-enter-chats').addEventListener('click', () => navigateTo('chatList'));
+            card.querySelector('#btn-show-settings').addEventListener('click', () => showNicknameSetupModal(false));
+            card.querySelector('#btn-logout').addEventListener('click', () => signOut(auth));
+            return container;
+        };
+
+        // --- NICKNAME MODAL LOGIC & RENDER ---
+
+        const handleNicknameSetup = async (e) => {
+            e.preventDefault();
+            const form = e.target;
+            const nickname = form.nickname.value.trim();
+            const errorElement = document.getElementById('nickname-error');
+            
+            if (!nickname) {
+                errorElement.textContent = "Пожалуйста, придумайте никнейм.";
+                return;
+            }
+
+            errorElement.textContent = '';
+            const submitButton = form.querySelector('button[type="submit"]');
+            submitButton.disabled = true;
+            submitButton.innerHTML = `<div class="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>`;
+
+            try {
+                await updateProfile(currentUser, { displayName: nickname });
+                await indexUserMetadata(currentUser);
+                
+                // Обновляем текущего пользователя в глобальном стейте
+                updateCurrentUser(auth.currentUser); 
+                
+                // Закрываем модальное окно и перерисовываем
+                showNicknameSetupModal(false); 
+                
+            } catch (err) {
+                console.error(err);
+                errorElement.textContent = "Ошибка сохранения никнейма. Попробуйте снова.";
+            } finally {
+                submitButton.disabled = false;
+                // Не обновляем текст кнопки, так как стейт изменится и компонент перерисуется
+            }
+        };
+
+        const showNicknameSetupModal = (isSetupRequired) => {
+            const modal = renderNicknameSetupModal(isSetupRequired);
+            // Принудительно вставляем модальное окно поверх текущего экрана
+            const appContainer = document.getElementById('app-container');
+            
+            // Проверяем, существует ли уже модалка
+            if (document.getElementById('nickname-modal-overlay')) {
+                document.getElementById('nickname-modal-overlay').remove();
+            }
+
+            appContainer.appendChild(modal);
+
+            // Закрытие модалки по клику вне (только если не обязательный setup)
+            if (!isSetupRequired) {
+                modal.addEventListener('click', (e) => {
+                    if (e.target === modal) {
+                        modal.remove();
+                        renderApp(); // Перерисовываем основной экран
+                    }
+                });
+                modal.querySelector('#btn-nickname-close').addEventListener('click', () => {
+                    modal.remove();
+                    renderApp(); 
+                });
+            }
+
+            modal.querySelector('#nickname-form').addEventListener('submit', handleNicknameSetup);
+        };
+
+        const renderNicknameSetupModal = (isSetupRequired) => {
+            const tempNickname = currentUser.email?.split('@')[0] || '';
+            const initialNickname = currentUser.displayName || tempNickname;
+            
+            const overlay = createElement('div', { id: 'nickname-modal-overlay' }, [
+                'fixed', 'inset-0', 'bg-black/70', 'flex', 'items-center', 'justify-center', 'p-4', 'z-50'
+            ]);
+            
+            const card = createElement('div', {}, [
+                'w-full', 'max-w-md', 'bg-slate-900/90', 'backdrop-blur-xl', 'border', 
+                'border-white/20', 'p-8', 'rounded-3xl', 'shadow-2xl', 'relative', 'overflow-hidden'
+            ]);
+
+            card.innerHTML = `
+                <div class="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-yellow-500 via-pink-500 to-red-500"></div>
+                
+                ${!isSetupRequired ? `<button id="btn-nickname-close" class="absolute top-4 right-4 text-white/70 hover:text-white transition-colors p-1">${createIcon('X', 20).outerHTML}</button>` : ''}
+
+                <div class="flex flex-col items-center mb-8">
+                    ${createIcon('Settings', 40, ['text-white', 'mb-2']).outerHTML}
+                    <h1 class="text-2xl font-bold text-white tracking-tight">
+                        ${isSetupRequired ? "Придумайте Никнейм" : "Изменить Никнейм"}
+                    </h1>
+                    <p class="text-blue-200 mt-2 text-sm uppercase tracking-widest opacity-80">
+                        ${isSetupRequired ? "Обязательный шаг для начала" : "Ваши настройки профиля"}
+                    </p>
+                </div>
+
+                <form id="nickname-form" class="space-y-6">
+                    <div class="relative group">
+                        ${createIcon('User', 20, ['absolute', 'left-4', 'top-1/2', '-translate-y-1/2', 'text-white/50', 'group-focus-within:text-white', 'transition-colors']).outerHTML}
+                        <input
+                            type="text"
+                            name="nickname"
+                            placeholder="Ваш Никнейм"
+                            value="${initialNickname}"
+                            oninput="this.value = this.value.slice(0, 30)"
+                            maxlength="30"
+                            required
+                            class="w-full bg-black/20 border border-white/10 rounded-2xl py-4 pl-12 pr-4 text-white placeholder-white/30 focus:outline-none focus:bg-black/30 focus:border-white/30 transition-all"
+                        />
+                    </div>
+                    
+                    <div id="nickname-error" class="text-red-300 text-sm text-center h-5"></div> 
+
+                    <button type="submit"
+                        class="w-full bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 text-white font-bold py-4 rounded-2xl shadow-lg shadow-purple-500/30 transition-all transform hover:scale-[1.02] active:scale-[0.98] flex items-center justify-center gap-2"
+                    >
+                        ${isSetupRequired ? "Сохранить и войти" : "Сохранить изменения"} ${createIcon('Sparkles', 20).outerHTML}
+                    </button>
+                    
+                    ${!isSetupRequired ? `
+                        <button type="button" id="btn-nickname-close"
+                            class="w-full text-white/70 hover:text-white mt-2 p-2 transition-colors"
+                        >
+                            Отмена
+                        </button>
+                    ` : ''}
+                </form>
+            `;
+            overlay.appendChild(card);
+            return overlay;
+        };
+
+        // --- CHAT LIST & SEARCH LOGIC & RENDER ---
+
+        let chatUnsubscribe = null;
+        let chatList = [];
+        let searchResults = [];
+
+        const subscribeToChats = () => {
+            if (chatUnsubscribe) chatUnsubscribe(); // Отписываемся от старой подписки
+            if (!currentUserId) return;
+
+            const chatsRef = collection(db, 'artifacts', appId, 'public', 'data', 'chats');
+            const q = query(chatsRef, where('members', 'array-contains', currentUserId), orderBy('updatedAt', 'desc'));
+
+            chatUnsubscribe = onSnapshot(q, (snapshot) => {
+                chatList = [];
+                snapshot.forEach((doc) => {
+                    const chatData = doc.data();
+                    let displayName = chatData.name;
+                    let targetId = null;
+
+                    if (chatData.type === 'private') {
+                        targetId = chatData.members.find(uid => uid !== currentUserId);
+                        displayName = chatData.memberNames[targetId] || 'Неизвестный пользователь';
+                    }
+                    
+                    chatList.push({ ...chatData, id: doc.id, name: displayName, targetId: targetId });
+                });
+                renderApp(); // Перерисовываем, чтобы обновить список чатов
+            }, (error) => {
+                console.error("Ошибка при получении списка чатов:", error);
+            });
+        };
+        
+        const searchUsers = async (queryText) => {
+            const searchResultsContainer = document.getElementById('search-results-container');
+            if (!searchResultsContainer) return;
+            searchResultsContainer.innerHTML = '';
+            
+            if (queryText.length < 3) {
+                searchResults = [];
+                return;
+            }
+
+            searchResultsContainer.innerHTML = `<p class="text-white/50 text-center">Поиск...</p>`;
+            
+            const qText = queryText.toLowerCase();
+            
+            try {
+                const usersRef = collection(db, 'artifacts', appId, 'public', 'data', 'users_metadata');
+                const q = query(
+                    usersRef, 
+                    where('nickname', '>=', qText), 
+                    where('nickname', '<=', qText + '\uf7ff'),
+                    limit(10)
+                );
+                
+                const snapshot = await getDocs(q);
+                searchResults = [];
+                snapshot.forEach(doc => {
+                    const data = doc.data();
+                    if (data.uid !== currentUserId) { 
+                        searchResults.push(data);
+                    }
+                });
+                
+                renderSearchResults(searchResultsContainer);
+
+            } catch (error) {
+                console.error("Ошибка поиска пользователей:", error);
+            }
+        };
+
+        const renderSearchResults = (container) => {
+            container.innerHTML = ''; // Очищаем 'Поиск...'
+            
+            if (searchResults.length === 0) {
+                container.innerHTML = `<p class="text-white/50 text-center">Пользователи не найдены.</p>`;
+                return;
+            }
+
+            const header = createElement('h3', {}, ['text-sm', 'font-semibold', 'text-purple-300', 'mb-2'], `Результаты поиска (${searchResults.length})`);
+            container.appendChild(header);
+
+            searchResults.forEach(user => {
+                const item = createElement('div', { 'data-uid': user.uid }, [
+                    'flex', 'justify-between', 'items-center', 'p-3', 'hover:bg-white/10', 'rounded-lg', 'cursor-pointer', 'transition-colors', 'mt-1'
+                ]);
+
+                const userInitial = user.originalNickname?.[0]?.toUpperCase() || '?';
+
+                item.innerHTML = `
+                    <div class="flex items-center gap-3">
+                        <div class="w-8 h-8 rounded-full bg-blue-500 flex items-center justify-center text-white font-bold text-sm">
+                            ${userInitial}
+                        </div>
+                        <span class="text-white font-semibold">${user.originalNickname}</span>
+                    </div>
+                    ${createIcon('MessageSquare', 18, ['text-cyan-400']).outerHTML}
+                `;
+                
+                item.addEventListener('click', () => handleStartPrivateChat(user));
+                container.appendChild(item);
+            });
+        };
+        
+        const handleSearchInputChange = (e) => {
+            const queryText = e.target.value.trim();
+            if (queryText.length >= 3) {
+                // Делаем поиск с небольшой задержкой (debounce)
+                clearTimeout(e.target.searchTimeout);
+                e.target.searchTimeout = setTimeout(() => searchUsers(queryText), 300);
+            } else {
+                // Если запрос слишком короткий, очищаем результаты
+                searchResults = [];
+                const container = document.getElementById('search-results-container');
+                if(container) container.innerHTML = '';
+            }
+        };
+
+        const handleStartPrivateChat = async (targetUser) => {
+            const targetId = targetUser.uid;
+            const chatId = getPrivateChatId(currentUserId, targetId);
+            const chatRef = doc(db, 'artifacts', appId, 'public', 'data', 'chats', chatId);
+            
+            // Создаем/обновляем метаданные чата
+            const chatData = {
+                id: chatId,
+                type: 'private',
+                members: [currentUserId, targetId],
                 memberNames: {
-                    [currentUser.uid]: currentUser.displayName,
+                    [currentUserId]: currentUser.displayName,
+                    [targetId]: targetUser.originalNickname
                 },
-                lastMessage: 'Группа создана.',
+                lastMessage: '',
                 updatedAt: serverTimestamp(),
             };
+            await setDoc(chatRef, chatData, { merge: true });
 
+            // Переходим в чат
+            navigateTo('chat', { 
+                ...chatData, 
+                name: targetUser.originalNickname, 
+                targetId: targetId 
+            });
+        };
+
+        const handleChatListItemClick = (chat) => {
+            navigateTo('chat', chat);
+        };
+        
+        const handleCreateGroup = async (groupName) => {
             const groupsRef = collection(db, 'artifacts', appId, 'public', 'data', 'chats');
-            const newGroupRef = await addDoc(groupsRef, groupMetadata);
+            const newGroupRef = await addDoc(groupsRef, {
+                name: groupName.trim(),
+                type: 'group',
+                creatorId: currentUserId,
+                members: [currentUserId], // Только создатель
+                memberNames: { [currentUserId]: currentUser.displayName },
+                lastMessage: 'Группа создана.',
+                updatedAt: serverTimestamp(),
+            });
 
-            // Отправляем первое сообщение
             const messagesRef = collection(db, 'artifacts', appId, 'public', 'data', 'chats', newGroupRef.id, 'messages');
             await addDoc(messagesRef, {
-                text: `Группа "${finalName}" создана пользователем ${currentUser.displayName}.`,
+                text: `Группа "${groupName}" создана пользователем ${currentUser.displayName}.`,
                 createdAt: serverTimestamp(),
-                senderId: currentUser.uid,
+                senderId: currentUserId,
                 senderName: 'Система',
             });
             
-            // Здесь должна быть логика добавления выбранных друзей в чат, 
-            // но для простоты (и чтобы не усложнять UI) оставляем только создателя, 
-            // как вы просили, что группа "появится только у создателя".
-
-            onClose();
-
-        } catch (err) {
-            console.error(err);
-            setError("Ошибка создания группы.");
-        } finally {
-            setLoading(false);
-        }
-    };
-    
-    // Получение списка друзей для выбора (на основе существующих приватных чатов)
-    const availableFriends = useMemo(() => {
-        return existingChats
-            .filter(chat => chat.type === 'private')
-            .map(chat => {
-                const targetId = chat.members.find(id => id !== currentUser.uid);
-                return {
-                    uid: targetId,
-                    nickname: chat.memberNames[targetId],
-                };
+            // Автоматический переход в созданную группу
+            navigateTo('chat', { 
+                id: newGroupRef.id, 
+                name: groupName.trim(), 
+                type: 'group',
+                members: [currentUserId]
             });
-    }, [existingChats, currentUser.uid]);
+        };
 
+        const renderCreateGroupModal = () => {
+            const overlay = createElement('div', { id: 'group-modal-overlay' }, [
+                'fixed', 'inset-0', 'bg-black/70', 'flex', 'items-center', 'justify-center', 'p-4', 'z-50'
+            ]);
+            
+            const card = createElement('div', {}, [
+                'w-full', 'max-w-lg', 'bg-slate-900/90', 'backdrop-blur-xl', 'border', 
+                'border-white/20', 'p-8', 'rounded-3xl', 'shadow-2xl', 'relative', 'overflow-hidden'
+            ]);
 
-    return (
-        <div className="fixed inset-0 bg-black/70 flex items-center justify-center p-4 z-50" onClick={onClose}>
-            <motion.div 
-                key="create-group"
-                initial={{ opacity: 0, scale: 0.9 }}
-                animate={{ opacity: 1, scale: 1 }}
-                exit={{ opacity: 0, scale: 0.9 }}
-                className="w-full max-w-lg bg-slate-900/90 backdrop-blur-xl border border-white/20 p-8 rounded-3xl shadow-2xl relative overflow-hidden"
-                onClick={(e) => e.stopPropagation()} 
-            >
-                <div className="flex justify-between items-center mb-6 border-b border-white/10 pb-3">
-                    <h2 className="text-2xl font-bold text-white tracking-tight flex items-center gap-2">
-                        <Users size={24} className="text-purple-400" /> Создать Новую Группу
+            card.innerHTML = `
+                <div class="flex justify-between items-center mb-6 border-b border-white/10 pb-3">
+                    <h2 class="text-2xl font-bold text-white tracking-tight flex items-center gap-2">
+                        ${createIcon('Users', 24, ['text-purple-400']).outerHTML} Создать Новую Группу
                     </h2>
-                    <button onClick={onClose} className="text-white/70 hover:text-white">
-                        <CornerDownLeft size={20} />
-                    </button>
+                    <button id="btn-group-close" class="text-white/70 hover:text-white">${createIcon('X', 20).outerHTML}</button>
                 </div>
                 
-                <form onSubmit={handleCreateGroup} className="space-y-6">
-                    <div className="relative group">
+                <form id="group-form" class="space-y-6">
+                    <div class="relative group">
                         <input
                             type="text"
+                            name="groupName"
                             placeholder="Название группы"
-                            value={groupName}
-                            onChange={(e) => setGroupName(e.target.value)}
-                            className="w-full bg-black/20 border border-white/10 rounded-2xl py-3 px-4 text-white placeholder-white/30 focus:outline-none focus:bg-black/30 focus:border-white/30 transition-all"
                             required
+                            class="w-full bg-black/20 border border-white/10 rounded-2xl py-3 px-4 text-white placeholder-white/30 focus:outline-none focus:bg-black/30 focus:border-white/30 transition-all"
                         />
                     </div>
 
-                    <div className="text-red-300 text-sm h-5">{error}</div> 
+                    <div id="group-error" class="text-red-300 text-sm h-5"></div> 
 
-                    <button
-                        type="submit"
-                        disabled={loading}
-                        className="w-full bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 text-white font-bold py-3 rounded-xl shadow-lg shadow-purple-500/30 transition-all disabled:opacity-50 flex items-center justify-center gap-2"
+                    <button type="submit"
+                        class="w-full bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 text-white font-bold py-3 rounded-xl shadow-lg shadow-purple-500/30 transition-all flex items-center justify-center gap-2"
                     >
-                        {loading ? <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : (
-                            <>
-                                Создать Группу (Только для себя) <Plus size={20} />
-                            </>
-                        )}
+                        Создать Группу (Только для себя) ${createIcon('Plus', 20).outerHTML}
                     </button>
-                    <p className="text-xs text-white/50 text-center">
-                        * Группа будет видна только вам. Друзей можно будет добавить позже.
+                    <p class="text-xs text-white/50 text-center">
+                        * Группа будет видна только вам.
                     </p>
                 </form>
-            </motion.div>
-        </div>
-    );
-};
+            `;
+            overlay.appendChild(card);
+            
+            const closeModal = () => overlay.remove();
+            
+            overlay.querySelector('#btn-group-close').addEventListener('click', closeModal);
+            overlay.addEventListener('click', (e) => {
+                if (e.target === overlay) closeModal();
+            });
 
-
-// Экран со списком чатов и поиском друзей
-const ChatListScreen = ({ currentUser, setScreen, setChat }) => {
-    const [chats, setChats] = useState([]);
-    const [searchQuery, setSearchQuery] = useState('');
-    const [searchResults, setSearchResults] = useState([]);
-    const [isSearching, setIsSearching] = useState(false);
-    const [showCreateGroupModal, setShowCreateGroupModal] = useState(false);
-
-    // 1. Подписка на чаты пользователя
-    useEffect(() => {
-        if (!currentUser || !db) return;
-        
-        // Получаем все чаты, где текущий пользователь является членом (поле 'members' содержит его UID)
-        const chatsRef = collection(db, 'artifacts', appId, 'public', 'data', 'chats');
-        const q = query(chatsRef, where('members', 'array-contains', currentUser.uid), orderBy('updatedAt', 'desc'));
-
-        const unsubscribe = onSnapshot(q, (snapshot) => {
-            const chatList = [];
-            snapshot.forEach((doc) => {
-                const chatData = doc.data();
-                let displayName = chatData.name;
-                let targetId = null;
-
-                if (chatData.type === 'private') {
-                    // Для 1-на-1 чата определяем имя собеседника
-                    targetId = chatData.members.find(uid => uid !== currentUser.uid);
-                    displayName = chatData.memberNames[targetId] || 'Неизвестный пользователь';
+            card.querySelector('#group-form').addEventListener('submit', async (e) => {
+                e.preventDefault();
+                const nameInput = e.target.groupName;
+                const errorElement = document.getElementById('group-error');
+                
+                if (!nameInput.value.trim()) {
+                    errorElement.textContent = "Введите название группы.";
+                    return;
                 }
                 
-                chatList.push({ ...chatData, id: doc.id, name: displayName, targetId: targetId });
+                await handleCreateGroup(nameInput.value);
+                closeModal();
             });
-            setChats(chatList);
-        }, (error) => {
-            console.error("Ошибка при получении списка чатов:", error);
+
+            return overlay;
+        };
+
+
+        const renderChatListScreen = () => {
+            const container = createElement('div', {}, ['flex', 'flex-col', 'h-screen', 'max-w-4xl', 'mx-auto', 'md:p-6']);
+            const chatListWrapper = createElement('div', {}, [
+                'flex-1', 'bg-black/40', 'md:bg-white/5', 'md:backdrop-blur-xl', 'md:border', 
+                'md:border-white/10', 'md:rounded-3xl', 'flex', 'flex-col', 'overflow-hidden', 'relative', 'shadow-2xl'
+            ]);
+
+            // Header and Search
+            const header = createElement('div', {}, ['p-4', 'border-b', 'border-white/10', 'bg-white/5', 'backdrop-blur-md', 'sticky', 'top-0', 'z-10']);
+            
+            header.innerHTML = `
+                <div class='flex justify-between items-center mb-4'>
+                    <h2 class="text-white text-xl font-bold flex items-center gap-2">
+                        ${createIcon('MessageSquare', 20, ['text-pink-400']).outerHTML} Ваши Чаты
+                    </h2>
+                    <div class='flex gap-2'>
+                        <button id="btn-show-group-modal" title="Создать Группу"
+                            class="p-2 bg-purple-600 hover:bg-purple-500 rounded-xl text-white transition-colors flex items-center gap-1"
+                        >
+                            ${createIcon('Users', 18).outerHTML}
+                        </button>
+                        <button id="btn-back-welcome" title="Вернуться к приветствию"
+                            class="p-2 hover:bg-white/10 rounded-xl text-white/70 hover:text-white transition-colors"
+                        >
+                            ${createIcon('CornerDownLeft', 20).outerHTML}
+                        </button>
+                        <button id="btn-logout-chats" title="Выход"
+                            class="p-2 hover:bg-white/10 rounded-xl text-white/70 hover:text-white transition-colors"
+                        >
+                            ${createIcon('LogOut', 20).outerHTML}
+                        </button>
+                    </div>
+                </div>
+
+                <div class="relative">
+                    ${createIcon('Search', 20, ['absolute', 'left-4', 'top-1/2', '-translate-y-1/2', 'text-white/50']).outerHTML}
+                    <input type="text" id="search-input" placeholder="Найти друга по никнейму..."
+                        class="w-full bg-black/20 border border-white/10 rounded-xl py-3 pl-12 pr-4 text-white placeholder-white/30 focus:outline-none focus:bg-black/30 focus:border-white/30 transition-all"
+                    />
+                </div>
+                <div id="search-results-container" class="absolute top-[120px] left-0 right-0 z-20 bg-slate-800/95 backdrop-blur-lg p-4 shadow-2xl border-b border-white/20 hidden">
+                    <!-- Результаты поиска здесь -->
+                </div>
+            `;
+            chatListWrapper.appendChild(header);
+
+            // Chat List
+            const listContainer = createElement('div', {}, ['flex-1', 'overflow-y-auto', 'custom-scrollbar', 'p-4', 'space-y-2']);
+            
+            if (chatList.length === 0) {
+                listContainer.innerHTML = `
+                    <div class="text-center text-white/50 mt-10">
+                        У вас нет активных чатов. Найдите друга по никнейму или создайте группу!
+                    </div>
+                `;
+            } else {
+                chatList.forEach(chat => {
+                    const item = createElement('div', { 'data-chat-id': chat.id }, [
+                        'flex', 'items-center', 'gap-4', 'p-3', 'bg-white/10', 'hover:bg-white/20', 
+                        'rounded-xl', 'cursor-pointer', 'transition-colors', 'border', 'border-white/10'
+                    ]);
+
+                    const initial = chat.type === 'private' ? chat.name?.[0]?.toUpperCase() : createIcon('Users', 20).outerHTML;
+                    const time = chat.updatedAt?.toDate ? chat.updatedAt.toDate().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) : '...';
+
+                    item.innerHTML = `
+                        <div class="w-10 h-10 rounded-full bg-gradient-to-tr from-cyan-400 to-blue-500 flex items-center justify-center text-white font-bold text-lg shadow-md">
+                            ${initial}
+                        </div>
+                        <div class="flex-1 overflow-hidden">
+                            <h3 class="text-white font-semibold truncate">
+                                ${chat.name}
+                            </h3>
+                            <p class="text-sm text-white/70 truncate">
+                                ${chat.lastMessage || 'Начните чат...'}
+                            </p>
+                        </div>
+                        <span class="text-xs text-white/50">
+                            ${time}
+                        </span>
+                    `;
+                    item.addEventListener('click', () => handleChatListItemClick(chat));
+                    listContainer.appendChild(item);
+                });
+            }
+
+            chatListWrapper.appendChild(listContainer);
+            container.appendChild(chatListWrapper);
+
+            // Event Listeners
+            chatListWrapper.querySelector('#btn-back-welcome').addEventListener('click', () => navigateTo('welcome'));
+            chatListWrapper.querySelector('#btn-logout-chats').addEventListener('click', () => signOut(auth));
+            chatListWrapper.querySelector('#btn-show-group-modal').addEventListener('click', () => {
+                document.getElementById('app-container').appendChild(renderCreateGroupModal());
+            });
+
+            const searchInput = chatListWrapper.querySelector('#search-input');
+            const searchResultsContainer = chatListWrapper.querySelector('#search-results-container');
+            searchInput.addEventListener('input', (e) => {
+                handleSearchInputChange(e);
+                searchResultsContainer.classList.toggle('hidden', e.target.value.length < 3);
+            });
+            
+            return container;
+        };
+
+        // --- CHAT SCREEN LOGIC & RENDER ---
+
+        let messagesUnsubscribe = null;
+        let chatMessages = [];
+        
+        const subscribeToMessages = () => {
+            if (messagesUnsubscribe) messagesUnsubscribe();
+            if (!activeChat) return;
+
+            const messagesRef = collection(db, 'artifacts', appId, 'public', 'data', 'chats', activeChat.id, 'messages');
+            const q = query(messagesRef, orderBy('createdAt'), limit(100));
+
+            messagesUnsubscribe = onSnapshot(q, (snapshot) => {
+                chatMessages = [];
+                snapshot.forEach(doc => chatMessages.push({ ...doc.data(), id: doc.id }));
+                renderChatMessages(); // Обновляем только список сообщений
+            }, (error) => {
+                console.error("Ошибка получения сообщений:", error);
+            });
+        };
+        
+        const handleSendMessage = async (e) => {
+            e.preventDefault();
+            const form = e.target;
+            const input = form.messageInput;
+            const messageText = input.value.trim();
+
+            if (!messageText || !activeChat) return;
+
+            input.value = ''; // Очищаем поле сразу
+            
+            const messageData = {
+                text: messageText,
+                createdAt: serverTimestamp(),
+                senderId: currentUserId,
+                senderName: currentUser.displayName,
+            };
+
+            try {
+                const messagesRef = collection(db, 'artifacts', appId, 'public', 'data', 'chats', activeChat.id, 'messages');
+                await addDoc(messagesRef, messageData);
+
+                // Обновляем метаданные чата
+                const chatRef = doc(db, 'artifacts', appId, 'public', 'data', 'chats', activeChat.id);
+                await setDoc(chatRef, {
+                    lastMessage: messageText,
+                    updatedAt: serverTimestamp(),
+                }, { merge: true });
+
+            } catch (error) {
+                console.error("Ошибка отправки сообщения:", error);
+            }
+        };
+
+        const renderChatMessages = () => {
+            const messagesContainer = document.getElementById('messages-container');
+            if (!messagesContainer) return;
+            
+            messagesContainer.innerHTML = '';
+
+            chatMessages.forEach((msg) => {
+                const isSender = msg.senderId === currentUserId;
+                const messageDiv = createElement('div', {}, ['flex', isSender ? 'justify-end' : 'justify-start']);
+                
+                const time = msg.createdAt?.toDate ? msg.createdAt.toDate().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) : '...';
+
+                messageDiv.innerHTML = `
+                    <div class="max-w-[80%] p-3 rounded-xl shadow-lg ${
+                        isSender 
+                            ? 'bg-purple-600 text-white rounded-br-none' 
+                            : 'bg-slate-700/50 text-white rounded-tl-none'
+                    }">
+                        ${!isSender ? `<div class="font-semibold text-xs mb-1 text-purple-200">${msg.senderName || 'Неизвестный'}</div>` : ''}
+                        <p class="text-sm whitespace-pre-wrap">${msg.text}</p>
+                        <span class="block text-right text-[10px] opacity-60 mt-1">${time}</span>
+                    </div>
+                `;
+                messagesContainer.appendChild(messageDiv);
+            });
+
+            // Автоматический скролл вниз
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        };
+
+        const renderChatScreen = () => {
+            // Запускаем подписку при рендере чата
+            subscribeToMessages(); 
+
+            const chatName = activeChat.type === 'private' ? activeChat.name : activeChat.name;
+
+            const container = createElement('div', {}, ['flex', 'flex-col', 'h-screen', 'max-w-4xl', 'mx-auto', 'md:p-6']);
+            const chatWrapper = createElement('div', {}, [
+                'flex-1', 'bg-black/40', 'md:bg-white/5', 'md:backdrop-blur-xl', 'md:border', 
+                'md:border-white/10', 'md:rounded-3xl', 'flex', 'flex-col', 'overflow-hidden', 'relative', 'shadow-2xl'
+            ]);
+
+            // Header
+            const header = createElement('div', {}, ['p-4', 'border-b', 'border-white/10', 'bg-white/5', 'backdrop-blur-md', 'sticky', 'top-0', 'z-10', 'flex', 'items-center']);
+            header.innerHTML = `
+                <button id="btn-back-chats" class="p-2 hover:bg-white/10 rounded-full text-white/80 transition-colors mr-3">
+                    ${createIcon('ChevronLeft', 24).outerHTML}
+                </button>
+                <div class="flex flex-col">
+                    <h2 class="text-white font-bold">${chatName}</h2>
+                    <span class="text-xs text-white/50">${activeChat.type === 'private' ? 'Личный чат' : 'Групповой чат'}</span>
+                </div>
+            `;
+            chatWrapper.appendChild(header);
+
+            // Messages Container
+            const messagesContainer = createElement('div', { id: 'messages-container' }, ['flex-1', 'overflow-y-auto', 'p-4', 'space-y-4', 'custom-scrollbar']);
+            chatWrapper.appendChild(messagesContainer);
+
+            // Input Form
+            const inputForm = createElement('form', { id: 'message-form' }, ['p-4', 'bg-white/5', 'border-t', 'border-white/10', 'flex']);
+            inputForm.innerHTML = `
+                <input type="text" name="messageInput" placeholder="Введите сообщение..."
+                    class="flex-1 bg-black/20 border border-white/10 text-white placeholder-white/30 rounded-l-xl p-4 focus:outline-none focus:bg-black/40 focus:border-purple-500/50 transition-all"
+                />
+                <button type="submit"
+                    class="bg-purple-600 hover:bg-purple-500 text-white font-bold px-6 rounded-r-xl shadow-lg shadow-purple-500/30 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
+                >
+                    ${createIcon('Send', 20).outerHTML}
+                </button>
+            `;
+            chatWrapper.appendChild(inputForm);
+
+            container.appendChild(chatWrapper);
+
+            // Event Listeners
+            header.querySelector('#btn-back-chats').addEventListener('click', () => {
+                if (messagesUnsubscribe) messagesUnsubscribe(); // Отписываемся
+                navigateTo('chatList');
+            });
+            inputForm.addEventListener('submit', handleSendMessage);
+            
+            // Первоначальный рендер сообщений
+            renderChatMessages(); 
+
+            return container;
+        };
+
+        // --- LIFECYCLE & AUTH WATCHER ---
+
+        // 1. Наблюдатель за состоянием аутентификации
+        onAuthStateChanged(auth, (user) => {
+            isAuthReady = true;
+            updateCurrentUser(user);
+            renderApp();
+            
+            if (user) {
+                // Если пользователь вошел, начинаем подписку на чаты
+                subscribeToChats();
+            } else {
+                // Если пользователь вышел, отписываемся от чатов
+                if (chatUnsubscribe) chatUnsubscribe();
+            }
         });
 
-        return () => unsubscribe();
-    }, [currentUser.uid]);
-
-    // 2. Поиск друзей по никнейму
-    const handleSearch = useCallback(async (queryText) => {
-        if (queryText.length < 3) {
-            setSearchResults([]);
-            return;
-        }
-
-        setIsSearching(true);
-        const qText = queryText.toLowerCase();
-        
-        try {
-            const usersRef = collection(db, 'artifacts', appId, 'public', 'data', 'users_metadata');
-            // Ищем по полю 'nickname' (нижний регистр)
-            const q = query(
-                usersRef, 
-                where('nickname', '>=', qText), 
-                where('nickname', '<=', qText + '\uf7ff'), // Юникод для поиска "начинается с"
-                limit(10)
-            );
+        // 2. Инициализация (запуск аутентификации по токену)
+        const init = async () => {
+            setupLiquidBackground();
             
-            const snapshot = await getDocs(q);
-            const results = [];
-            snapshot.forEach(doc => {
-                const data = doc.data();
-                // Исключаем текущего пользователя
-                if (data.uid !== currentUser.uid) { 
-                    results.push(data);
-                }
-            });
-            setSearchResults(results);
-        } catch (error) {
-            console.error("Ошибка поиска пользователей:", error);
-        } finally {
-            setIsSearching(false);
-        }
-    }, [currentUser.uid]);
+            // Если есть токен, пробуем войти по нему, иначе даем сработать onAuthStateChanged
+            if (initialAuthToken) {
+                 try {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                 } catch (e) {
+                    console.error("Custom token sign-in failed:", e);
+                    // Оставляем isAuthReady = true, чтобы показать экран входа
+                    isAuthReady = true;
+                    renderApp(); 
+                 }
+            } else {
+                // Если токена нет, просто ждем onAuthStateChanged
+                // Для надежности, если onAuthStateChanged не сработал сразу,
+                // устанавливаем isAuthReady через 1 секунду.
+                setTimeout(() => {
+                    if (!isAuthReady) {
+                        isAuthReady = true;
+                        renderApp();
+                    }
+                }, 1000);
+            }
+        };
 
-    // Обновляем поиск при изменении запроса
-    useEffect(() => {
-        const timeoutId = setTimeout(() => handleSearch(searchQuery), 300);
-        return () => clearTimeout(timeoutId);
-    }, [searchQuery, handleSearch]);
-
-    // Обработчик нажатия на результат поиска
-    const handleStartPrivateChat = async (targetUser) => {
-        const chatData = await createOrNavigateToPrivateChat(currentUser, targetUser);
-        setChat(chatData); // Переходим в чат
-        setSearchQuery(''); // Сбрасываем поиск
-        setSearchResults([]);
-    };
-    
-    // Обработчик нажатия на чат в списке
-    const handleOpenChat = (chat) => {
-        // Устанавливаем целевой ID для удобства в ChatScreen
-        if (chat.type === 'private' && !chat.targetId) {
-             chat.targetId = chat.members.find(uid => uid !== currentUser.uid);
-        }
-        setChat(chat);
-    };
-
-
-    return (
-        <div className="flex flex-col h-screen max-w-4xl mx-auto md:p-6">
-            <motion.div 
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                className="flex-1 bg-black/40 md:bg-white/5 md:backdrop-blur-xl md:border md:border-white/10 md:rounded-3xl flex flex-col overflow-hidden relative shadow-2xl"
-            >
-                {/* Хедер и Поиск */}
-                <div className="p-4 border-b border-white/10 bg-white/5 backdrop-blur-md sticky top-0 z-10">
-                    <div className='flex justify-between items-center mb-4'>
-                        <h2 className="text-white text-xl font-bold flex items-center gap-2">
-                            <MessageSquare size={20} className="text-pink-400" /> Ваши Чаты
-                        </h2>
-                        <div className='flex gap-2'>
-                            <button 
-                                onClick={() => setShowCreateGroupModal(true)}
-                                className="p-2 bg-purple-600 hover:bg-purple-500 rounded-xl text-white transition-colors flex items-center gap-1"
-                                title="Создать Группу"
-                            >
-                                <Users size={18} />
-                            </button>
-                            <button 
-                                onClick={() => setScreen('welcome')}
-                                className="p-2 hover:bg-white/10 rounded-xl text-white/70 hover:text-white transition-colors"
-                                title="Вернуться к приветствию"
-                            >
-                                <CornerDownLeft size={20} />
-                            </button>
-                            <button 
-                                onClick={() => signOut(auth)}
-                                className="p-2 hover:bg-white/10 rounded-xl text-white/70 hover:text-white transition-colors"
-                                title="Выход"
-                            >
-                                <LogOut size={20} />
-                            </button>
-                        </div>
-                    </div>
-
-                    {/* Поиск друзей по никнейму */}
-                    <div className="relative">
-                        <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-white/50" size={20} />
-                        <input
-                            type="text"
-                            placeholder="Найти друга по никнейму..."
-                            value={searchQuery}
-                            onChange={(e) => setSearchQuery(e.target.value)}
-                            className="w-full bg-black/20 border border-white/10 rounded-xl py-3 pl-12 pr-4 text-white placeholder-white/30 focus:outline-none focus:bg-black/30 focus:border-white/30 transition-all"
-                        />
-                    </div>
-                </div>
-
-                {/* Результаты поиска */}
-                {searchQuery.length >= 3 && (
-                    <div className="absolute top-[120px] left-0 right-0 z-20 bg-slate-800/95 backdrop-blur-lg p-4 shadow-2xl border-b border-white/20">
-                        <h3 className="text-sm font-semibold text-purple-300 mb-2">
-                            Результаты поиска ({searchResults.length})
-                        </h3>
-                        {isSearching && <p className="text-white/50">Поиск...</p>}
-                        {!isSearching && searchResults.length === 0 && (
-                            <p className="text-white/50">Пользователи с никнеймом "{searchQuery}" не найдены.</p>
-                        )}
-                        {!isSearching && searchResults.map(user => (
-                            <motion.div
-                                key={user.uid}
-                                initial={{ opacity: 0, y: 5 }}
-                                animate={{ opacity: 1, y: 0 }}
-                                className="flex justify-between items-center p-3 hover:bg-white/10 rounded-lg cursor-pointer transition-colors mt-1"
-                                onClick={() => handleStartPrivateChat(user)}
-                            >
-                                <div className="flex items-center gap-3">
-                                    <div className="w-8 h-8 rounded-full bg-blue-500 flex items-center justify-center text-white font-bold text-sm">
-                                        {user.originalNickname?.[0]?.toUpperCase()}
-                                    </div>
-                                    <span className="text-white font-semibold">{user.originalNickname}</span>
-                                </div>
-                                <MessageSquare size={18} className="text-cyan-400" />
-                            </motion.div>
-                        ))}
-                    </div>
-                )}
-
-                {/* Список чатов */}
-                <div className="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-2">
-                    {chats.length === 0 ? (
-                        <div className="text-center text-white/50 mt-10">
-                            У вас нет активных чатов. Найдите друга по никнейму или создайте группу!
-                        </div>
-                    ) : (
-                        chats.map(chat => (
-                            <motion.div
-                                key={chat.id}
-                                initial={{ opacity: 0, y: 10 }}
-                                animate={{ opacity: 1, y: 0 }}
-                                onClick={() => handleOpenChat(chat)}
-                                className="flex items-center gap-4 p-3 bg-white/10 hover:bg-white/20 rounded-xl cursor-pointer transition-colors border border-white/10"
-                            >
-                                <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-cyan-400 to-blue-500 flex items-center justify-center text-white font-bold text-lg shadow-md">
-                                    {chat.type === 'private' ? chat.name?.[0]?.toUpperCase() : <Users size={20} />}
-                                </div>
-                                <div className="flex-1 overflow-hidden">
-                                    <h3 className="text-white font-semibold truncate">
-                                        {chat.name}
-                                    </h3>
-                                    <p className="text-sm text-white/70 truncate">
-                                        {chat.lastMessage || 'Начните чат...'}
-                                    </p>
-                                </div>
-                                <span className="text-xs text-white/50">
-                                    {chat.updatedAt?.toDate ? chat.updatedAt.toDate().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) : '...'}
-                                </span>
-                            </motion.div>
-                        ))
-                    )}
-                </div>
-            </motion.div>
-
-            {/* Модальное окно создания группы */}
-            <AnimatePresence>
-                {showCreateGroupModal && (
-                    <CreateGroupModal
-                        currentUser={currentUser}
-                        existingChats={chats}
-                        onClose={() => setShowCreateGroupModal(false)}
-                    />
-                )}
-            </AnimatePresence>
-        </div>
-    );
-};
-
-
-// Главный компонент App
-const App = () => {
-  const [user, setUser] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [showNicknameSetup, setShowNicknameSetup] = useState(false);
-  const [currentScreen, setCurrentScreen] = useState('welcome'); // 'welcome', 'chatList', 'chat'
-  const [activeChat, setActiveChat] = useState(null); // { id, name, type, targetId }
-
-  useEffect(() => {
-    // 1. Попытка авторизации по токену системы
-    const initAuth = async () => {
-       if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-         try {
-           await signInWithCustomToken(auth, __initial_auth_token);
-         } catch (e) {
-           console.error("Token auth failed, falling back", e);
-         }
-       }
-    };
-    initAuth();
-
-    // 2. Слушатель состояния аутентификации
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      setUser(currentUser);
-      setLoading(false);
-      
-      if (currentUser) {
-        // Убеждаемся, что метаданные пользователя проиндексированы
-        indexUserMetadata(currentUser); 
-        
-        // Если пользователь авторизован, но никнейм отсутствует, показываем экран настройки
-        if (!currentUser.displayName) {
-          setShowNicknameSetup(true);
-          setCurrentScreen('welcome'); // Возвращаем на приветствие, чтобы показать модалку
-        } else if (currentScreen === 'auth') {
-          // После успешного входа, если мы на экране auth, переходим на welcome
-          setCurrentScreen('welcome');
-        }
-      } else {
-        // Если пользователь вышел, возвращаемся на экран авторизации
-        setCurrentScreen('auth');
-        setActiveChat(null);
-      }
-    });
-
-    return () => unsubscribe();
-  }, []);
-
-  if (loading) {
-    return (
-      <div className="h-screen w-screen flex items-center justify-center bg-slate-900 text-white">
-        <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-purple-500"></div>
-      </div>
-    );
-  }
-
-  // Принудительный показ настройки никнейма (Модальное окно)
-  if (user && showNicknameSetup) {
-     return (
-        <div className="min-h-screen font-sans text-slate-100 antialiased selection:bg-purple-500 selection:text-white">
-            <LiquidBackground />
-            <div className="flex items-center justify-center min-h-screen p-4">
-              <NicknameSetupScreen 
-                  user={user} 
-                  tempNickname={user.email?.split('@')[0] || ''}
-                  onError={(msg) => console.error(msg)} 
-                  onClose={() => setShowNicknameSetup(false)}
-                  onNicknameChange={() => setUser({...user, displayName: auth.currentUser.displayName})} // Обновляем локальный стейт
-              />
-            </div>
-        </div>
-     );
-  }
-
-  const renderScreen = () => {
-    if (!user || currentScreen === 'auth') {
-        return <AuthScreen key="auth" />;
-    }
-
-    if (activeChat) {
-        return <ChatScreen key="chat" chat={activeChat} currentUser={user} setChat={setActiveChat} />;
-    }
-
-    if (currentScreen === 'chatList') {
-        return <ChatListScreen key="chatList" currentUser={user} setScreen={setCurrentScreen} setChat={setActiveChat} />;
-    }
-    
-    // По умолчанию или currentScreen === 'welcome'
-    return <WelcomeUserScreen 
-        key="welcome" 
-        user={user} 
-        setScreen={setCurrentScreen} 
-        setShowSettings={setShowNicknameSetup} 
-    />;
-  };
-
-  return (
-    <div className="min-h-screen font-sans text-slate-100 antialiased selection:bg-purple-500 selection:text-white">
-      <LiquidBackground />
-      <AnimatePresence mode='wait'>
-        {renderScreen()}
-      </AnimatePresence>
-      
-      {/* Стили для скроллбара */}
-      <style>{`
-        .custom-scrollbar::-webkit-scrollbar {
-          width: 6px;
-        }
-        .custom-scrollbar::-webkit-scrollbar-track {
-          background: rgba(255, 255, 255, 0.05);
-        }
-        .custom-scrollbar::-webkit-scrollbar-thumb {
-          background: rgba(255, 255, 255, 0.2);
-          border-radius: 10px;
-        }
-        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-          background: rgba(255, 255, 255, 0.3);
-        }
-      `}</style>
-    </div>
-  );
-};
-
-export default App;
+        window.onload = init;
+    </script>
+</body>
+</html>
