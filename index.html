@@ -92,7 +92,8 @@ const AuthScreen = ({
     authError, handleRegister, handleLogin, handleGoogleSignIn, handleSaveNickname,
     isAnonymous
 }) => {
-    const isNicknameStep = isRegisterMode || (!isAnonymous && authPassword === 'GOOGLE_AUTH');
+    // В GoogleAuth нет пароля, поэтому используем его как маркер
+    const isNicknameStep = !isAnonymous && (isRegisterMode || authPassword === 'GOOGLE_AUTH');
 
     const handleSubmit = (e) => {
         e.preventDefault();
@@ -574,7 +575,11 @@ export default function App() {
                 setCurrentScreen(Screen.CHATS_LIST);
             } else {
                 // Новый зарегистрированный пользователь (Email/Google) без ника
+                setAuthEmail(user?.email || "");
+                setAuthPassword(user?.providerId === 'google.com' ? 'GOOGLE_AUTH' : '');
+                setAuthNickname(user?.displayName || "");
                 setAuthError("Пожалуйста, придумайте никнейм для вашего аккаунта.");
+                setIsRegisterMode(true); // Переключитесь на режим регистрации/настройки, чтобы получить ник
                 setCurrentScreen(Screen.AUTH);
             }
         } catch (e) {
@@ -629,7 +634,10 @@ export default function App() {
 
     const handleSaveNickname = async () => {
         if (user && user.uid) {
-            await saveNickname(user.uid, authNickname, user.email || 'N/A', user.photoURL);
+            // Передайте почту/фото из объекта пользователя для Google/Email в зависимости от того, что доступно
+            const userEmail = user.email || authEmail || 'N/A';
+            const userPhoto = user.photoURL || null;
+            await saveNickname(user.uid, authNickname, userEmail, userPhoto);
         } else {
             setAuthError("Сначала необходимо авторизоваться.");
         }
