@@ -12,6 +12,7 @@ import {
 
 // --- Глобальные переменные (предоставляются средой Canvas) ---
 // ОБЯЗАТЕЛЬНО: используйте эти глобальные переменные для настройки Firebase.
+// Эти переменные обеспечивают безопасную работу приложения в среде Canvas.
 const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
 const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
 const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
@@ -230,7 +231,7 @@ const ChatListScreen = ({ nickname, userId, onGlobalChat, onSearchUsers, onSignO
                 <h1 className="text-2xl font-bold text-indigo-400">Списки Чатов</h1>
                 <p className="text-sm text-gray-400">
                     Привет, <span className="font-semibold text-indigo-300">{nickname}</span>!
-                    Ваш ID: <span className="font-mono text-xs">{userId}</span>
+                    Ваш ID: <span className="font-mono text-xs break-all">{userId}</span>
                 </p>
             </header>
 
@@ -451,7 +452,7 @@ const UserSearchScreen = ({ searchQuery, setSearchQuery, searchResults, onBack, 
                         <div key={userProfile.uid} className="p-4 bg-gray-700 rounded-lg shadow-md flex items-center justify-between">
                             <div>
                                 <p className="text-lg font-semibold text-white">{userProfile.nickname}</p>
-                                <p className="text-xs text-gray-400">ID: <span className="font-mono">{userProfile.uid}</span></p>
+                                <p className="text-xs text-gray-400">ID: <span className="font-mono break-all">{userProfile.uid}</span></p>
                             </div>
                             <span className="text-sm text-green-400 font-medium">Пользователь найден</span>
                         </div>
@@ -511,6 +512,7 @@ export default function App() {
         }
 
         try {
+            // Инициализация с использованием глобально предоставленной конфигурации
             const app = initializeApp(firebaseConfig);
             const authInstance = getAuth(app);
             const dbInstance = getFirestore(app);
@@ -529,7 +531,7 @@ export default function App() {
                     }
                 } catch (e) {
                     console.error("Ошибка начальной авторизации:", e);
-                    setError("Ошибка начальной аутентификации.");
+                    // Не устанавливаем глобальную ошибку, чтобы дать возможность пользователю войти через форму
                 }
                 setIsAuthReady(true);
             };
@@ -555,7 +557,7 @@ export default function App() {
             setError("Ошибка инициализации Firebase. Проверьте конфигурацию.");
             setLoading(false);
         }
-    }, [isAuthReady]); // Add isAuthReady as dependency to ensure we only run initialSignIn once
+    }, [isAuthReady]); 
 
     // --- Управление профилем пользователя ---
     // Извлеките ник пользователя и установите его или перенаправьте на AUTH, если ник отсутствует
@@ -643,8 +645,7 @@ export default function App() {
         setAuthError(null);
         try {
             const userCredential = await createUserWithEmailAndPassword(auth, authEmail, authPassword);
-            // При успешной регистрации saveNickname будет вызван через onAuthStateChanged -> checkUserProfile,
-            // но мы вызываем его здесь, чтобы сразу сохранить никнейм.
+            // onAuthStateChanged + checkUserProfile вызовет saveNickname
             await saveNickname(userCredential.user.uid, authNickname, authEmail);
         } catch (e) {
             console.error("Ошибка регистрации:", e);
