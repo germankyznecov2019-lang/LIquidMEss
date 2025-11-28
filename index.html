@@ -1,45 +1,27 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
-import { 
-    getAuth, 
-    signInAnonymously, 
-    signInWithCustomToken, 
-    onAuthStateChanged, 
-    createUserWithEmailAndPassword, 
-    signInWithEmailAndPassword,
-    GoogleAuthProvider,
-    signInWithPopup,
-    signOut
+import {
+    getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged,
+    createUserWithEmailAndPassword, signInWithEmailAndPassword,
+    GoogleAuthProvider, signInWithPopup, signOut
 } from 'firebase/auth';
-import { 
-    getFirestore, 
-    collection, 
-    query, 
-    where, 
-    getDocs, 
-    doc, 
-    setDoc, 
-    addDoc, 
-    onSnapshot, 
-    serverTimestamp,
-    orderBy,
-    limit,
-    getDoc 
+import {
+    getFirestore, collection, query, where, getDocs, doc, setDoc,
+    addDoc, onSnapshot, serverTimestamp, orderBy, limit, getDoc
 } from 'firebase/firestore';
 
-// --- Global Variables (Provided by Canvas Environment) ---
-// MANDATORY: Use these global variables for Firebase configuration.
+// --- Глобальные переменные (предоставляются средой Canvas) ---
+// ОБЯЗАТЕЛЬНО: используйте эти глобальные переменные для настройки Firebase.
 const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
 const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
 const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 // -----------------------------------------------------------
 
-// --- Firestore Path Helper ---
-// Public data path for shared resources (like the global chat and user list)
-const getPublicCollectionPath = (collectionName) => 
-    `artifacts/${appId}/public/data/${collectionName}`;
+// --- Помощник по пути к Firestore ---
+// Путь к общедоступным данным для общих ресурсов (таких как глобальный чат и список пользователей)
+const getPublicCollectionPath = (collectionName) => `artifacts/${appId}/public/data/${collectionName}`;
 
-// --- Component States ---
+// --- Состояния компонента ---
 const Screen = {
     AUTH: 'AUTH',
     CHATS_LIST: 'CHATS_LIST',
@@ -47,151 +29,612 @@ const Screen = {
     USER_SEARCH: 'USER_SEARCH',
 };
 
-// --- App Component ---
+// =========================================================================
+// --- Вложенные компоненты ---
+// =========================================================================
+
+/**
+ * @param {{ message: string }} props
+ */
+const LoadingScreen = ({ message = 'Загрузка...' }) => (
+    <div className="flex items-center justify-center h-screen bg-gray-900 text-white">
+        <div className="text-center p-8 bg-gray-800 rounded-xl shadow-2xl">
+            <svg className="animate-spin h-8 w-8 text-indigo-400 mx-auto mb-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+            <p className="text-xl font-semibold">{message}</p>
+        </div>
+    </div>
+);
+
+/**
+ * @param {{ message: string, onRetry: () => void }} props
+ */
+const ErrorDisplay = ({ message, onRetry }) => (
+    <div className="flex flex-col items-center justify-center h-screen bg-gray-900 text-white p-4">
+        <div className="text-center p-8 bg-red-900/50 border border-red-700 rounded-xl shadow-2xl">
+            <p className="text-3xl mb-4 font-bold text-red-300">Ошибка</p>
+            <p className="mb-6 text-red-100">{message}</p>
+            {onRetry && (
+                <button
+                    onClick={onRetry}
+                    className="px-6 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-medium rounded-lg transition duration-150 shadow-md"
+                >
+                    Повторить
+                </button>
+            )}
+        </div>
+    </div>
+);
+
+/**
+ * @param {object} props
+ * @param {string} props.authEmail
+ * @param {React.Dispatch<React.SetStateAction<string>>} props.setAuthEmail
+ * @param {string} props.authPassword
+ * @param {React.Dispatch<React.SetStateAction<string>>} props.setAuthPassword
+ * @param {boolean} props.isRegisterMode
+ * @param {React.Dispatch<React.SetStateAction<boolean>>} props.setIsRegisterMode
+ * @param {string} props.authNickname
+ * @param {React.Dispatch<React.SetStateAction<string>>} props.setAuthNickname
+ * @param {string | null} props.authError
+ * @param {() => Promise<void>} props.handleRegister
+ * @param {() => Promise<void>} props.handleLogin
+ * @param {() => Promise<void>} props.handleGoogleSignIn
+ * @param {() => Promise<void>} props.handleSaveNickname
+ * @param {boolean} props.isAnonymous
+ */
+const AuthScreen = ({
+    authEmail, setAuthEmail, authPassword, setAuthPassword,
+    isRegisterMode, setIsRegisterMode, authNickname, setAuthNickname,
+    authError, handleRegister, handleLogin, handleGoogleSignIn, handleSaveNickname,
+    isAnonymous
+}) => {
+    const isNicknameStep = isRegisterMode || (!isAnonymous && authPassword === 'GOOGLE_AUTH');
+
+    const handleSubmit = (e) => {
+        e.preventDefault();
+        if (isNicknameStep) {
+            handleSaveNickname();
+        } else if (isRegisterMode) {
+            handleRegister();
+        } else {
+            handleLogin();
+        }
+    };
+
+    return (
+        <div className="flex items-center justify-center min-h-screen bg-gray-900 p-4">
+            <div className="w-full max-w-md bg-gray-800 p-8 rounded-xl shadow-2xl border border-gray-700">
+                <h1 className="text-3xl font-bold text-center text-indigo-400 mb-6">
+                    {isNicknameStep ? 'Установка Никнейма' : isRegisterMode ? 'Регистрация' : 'Вход'}
+                </h1>
+
+                {authError && (
+                    <div className="p-3 mb-4 text-sm text-red-300 bg-red-900/50 rounded-lg border border-red-700">
+                        {authError}
+                    </div>
+                )}
+
+                <form onSubmit={handleSubmit}>
+                    {isNicknameStep ? (
+                        // Nickname Setup Step
+                        <div className="space-y-4">
+                            <p className="text-sm text-gray-400">
+                                Пожалуйста, придумайте уникальный никнейм.
+                            </p>
+                            <input
+                                type="text"
+                                placeholder="Ваш Никнейм"
+                                value={authNickname}
+                                onChange={(e) => setAuthNickname(e.target.value)}
+                                className="w-full p-3 rounded-lg bg-gray-700 text-white placeholder-gray-400 focus:ring-indigo-500 focus:border-indigo-500 border-transparent"
+                                required
+                            />
+                            <button
+                                type="submit"
+                                className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-lg shadow-lg transition duration-150"
+                            >
+                                Сохранить Никнейм
+                            </button>
+                        </div>
+                    ) : (
+                        // Login/Register Step
+                        <div className="space-y-4">
+                            <input
+                                type="email"
+                                placeholder="Email"
+                                value={authEmail}
+                                onChange={(e) => setAuthEmail(e.target.value)}
+                                className="w-full p-3 rounded-lg bg-gray-700 text-white placeholder-gray-400 focus:ring-indigo-500 focus:border-indigo-500 border-transparent"
+                                required
+                            />
+                            <input
+                                type="password"
+                                placeholder="Пароль"
+                                value={authPassword}
+                                onChange={(e) => setAuthPassword(e.target.value)}
+                                className="w-full p-3 rounded-lg bg-gray-700 text-white placeholder-gray-400 focus:ring-indigo-500 focus:border-indigo-500 border-transparent"
+                                required
+                            />
+                            {isRegisterMode && (
+                                <input
+                                    type="text"
+                                    placeholder="Никнейм (обязательно)"
+                                    value={authNickname}
+                                    onChange={(e) => setAuthNickname(e.target.value)}
+                                    className="w-full p-3 rounded-lg bg-gray-700 text-white placeholder-gray-400 focus:ring-indigo-500 focus:border-indigo-500 border-transparent"
+                                    required
+                                />
+                            )}
+                            <button
+                                type="submit"
+                                className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-lg shadow-lg transition duration-150"
+                            >
+                                {isRegisterMode ? 'Зарегистрироваться' : 'Войти'}
+                            </button>
+
+                            <div className="text-center text-sm text-gray-400 pt-2">
+                                <span className="mr-1">
+                                    {isRegisterMode ? 'Уже есть аккаунт?' : 'Нет аккаунта?'}
+                                </span>
+                                <button
+                                    type="button"
+                                    onClick={() => { setIsRegisterMode(!isRegisterMode); setAuthError(null); }}
+                                    className="text-indigo-400 hover:text-indigo-300 font-medium"
+                                >
+                                    {isRegisterMode ? 'Войти' : 'Зарегистрироваться'}
+                                </button>
+                            </div>
+
+                            <div className="flex items-center space-x-2 my-4">
+                                <div className="flex-grow border-t border-gray-600"></div>
+                                <span className="text-gray-500 text-sm">или</span>
+                                <div className="flex-grow border-t border-gray-600"></div>
+                            </div>
+
+                            <button
+                                type="button"
+                                onClick={handleGoogleSignIn}
+                                className="w-full py-3 flex items-center justify-center bg-red-600 hover:bg-red-700 text-white font-semibold rounded-lg shadow-lg transition duration-150"
+                            >
+                                <svg className="w-5 h-5 mr-2" fill="currentColor" viewBox="0 0 24 24">
+                                    <path d="M12.486 10.435v2.4h3.948c-.17 1.026-.82 2.37-2.736 3.633L16.29 19C19.49 16.25 21 12.83 21 10.43c0-.85-.125-1.57-.34-2.22H12.486V10.435z" />
+                                    <path d="M5.9 15.688c-.68-1.782-.68-3.79 0-5.572L3.132 7.74C1.196 9.872 1 12.006 1 12s.196 2.128 2.132 4.26l2.768-2.572z" />
+                                    <path d="M12.486 4.975c1.478 0 2.657.485 3.596 1.34L18.4 4.546C16.326 2.585 14.28 1 12.486 1 8.87 1 5.9 3.01 4.7 6.01L7.467 8.58c.45-1.168 1.488-2.235 5.019-3.605z" />
+                                    <path d="M12.486 21c3.542 0 6.51-1.92 7.82-4.83l-2.793-2.58c-1.385 1.096-2.564 1.76-5.027 1.76-3.84 0-6.81-2.01-8.01-5.01l-2.768 2.57C5.9 19.99 8.87 21 12.486 21z" />
+                                </svg>
+                                Войти через Google
+                            </button>
+                        </div>
+                    )}
+                </form>
+            </div>
+        </div>
+    );
+};
+
+/**
+ * @param {object} props
+ * @param {string} props.nickname
+ * @param {string} props.userId
+ * @param {() => void} props.onGlobalChat
+ * @param {() => void} props.onSearchUsers
+ * @param {() => Promise<void>} props.onSignOut
+ */
+const ChatListScreen = ({ nickname, userId, onGlobalChat, onSearchUsers, onSignOut }) => {
+    return (
+        <div className="flex flex-col h-screen bg-gray-900 text-white">
+            <header className="p-4 bg-gray-800 shadow-xl border-b border-indigo-500/50">
+                <h1 className="text-2xl font-bold text-indigo-400">Списки Чатов</h1>
+                <p className="text-sm text-gray-400">
+                    Привет, <span className="font-semibold text-indigo-300">{nickname}</span>!
+                    Ваш ID: <span className="font-mono text-xs">{userId}</span>
+                </p>
+            </header>
+
+            <main className="flex-grow p-4 space-y-4 overflow-y-auto">
+                <button
+                    onClick={onGlobalChat}
+                    className="w-full flex items-center p-4 bg-gray-700 hover:bg-gray-600 rounded-xl transition duration-150 shadow-md transform hover:scale-[1.01] border-l-4 border-indigo-500"
+                >
+                    <div className="flex-shrink-0 bg-indigo-500 p-3 rounded-full mr-4">
+                        <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 8h2a2 2 0 012 2v6a2 2 0 01-2 2h-2v4l-4-4H9a2 2 0 01-2-2V8a2 2 0 012-2h6a2 2 0 012 2z"></path></svg>
+                    </div>
+                    <div>
+                        <p className="text-lg font-semibold text-white">Глобальный Чат</p>
+                        <p className="text-sm text-gray-400">Общайтесь со всеми пользователями приложения.</p>
+                    </div>
+                </button>
+                <button
+                    onClick={onSearchUsers}
+                    className="w-full flex items-center p-4 bg-gray-700 hover:bg-gray-600 rounded-xl transition duration-150 shadow-md transform hover:scale-[1.01] border-l-4 border-blue-500"
+                >
+                    <div className="flex-shrink-0 bg-blue-500 p-3 rounded-full mr-4">
+                        <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
+                    </div>
+                    <div>
+                        <p className="text-lg font-semibold text-white">Найти Друзей</p>
+                        <p className="text-sm text-gray-400">Поиск пользователей по никнейму.</p>
+                    </div>
+                </button>
+                <div className="p-4 bg-gray-800 rounded-xl border border-gray-700">
+                    <p className="text-md font-semibold text-gray-300">Внимание:</p>
+                    <p className="text-sm text-gray-500">
+                        Пользователи, вошедшие анонимно, могут только читать сообщения и не могут отправлять свои.
+                    </p>
+                </div>
+            </main>
+
+            <footer className="p-4 bg-gray-800 border-t border-gray-700">
+                <button
+                    onClick={onSignOut}
+                    className="w-full py-2 bg-red-600 hover:bg-red-700 text-white font-semibold rounded-lg transition duration-150 shadow-md"
+                >
+                    Выйти ({nickname})
+                </button>
+            </footer>
+        </div>
+    );
+};
+
+/**
+ * @typedef {object} Message
+ * @property {string} id
+ * @property {string} text
+ * @property {object} timestamp
+ * @property {string} senderID
+ * @property {string} senderNickname
+ * @property {string | null} senderPhoto
+ */
+
+/**
+ * @param {object} props
+ * @param {Message[]} props.messages
+ * @param {string} props.messageInput
+ * @param {React.Dispatch<React.SetStateAction<string>>} props.setMessageInput
+ * @param {() => void} props.onBack
+ * @param {(e: React.FormEvent) => Promise<void>} props.handleSendMessage
+ * @param {boolean} props.isSending
+ * @param {string} props.currentUserId
+ * @param {boolean} props.isAnonymous
+ */
+const GlobalChatScreen = ({ messages, messageInput, setMessageInput, onBack, handleSendMessage, isSending, currentUserId, isAnonymous }) => {
+    const messagesEndRef = useRef(null);
+
+    const scrollToBottom = () => {
+        messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    };
+
+    useEffect(scrollToBottom, [messages]);
+
+    // Format timestamp display
+    const formatTimestamp = (timestamp) => {
+        if (!timestamp) return '...';
+        const date = timestamp.toDate();
+        return date.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+    };
+
+    return (
+        <div className="flex flex-col h-screen bg-gray-900 text-white">
+            {/* Header */}
+            <header className="p-4 bg-gray-800 shadow-xl flex items-center border-b border-indigo-500/50">
+                <button onClick={onBack} className="p-2 mr-3 text-indigo-400 hover:text-indigo-300 rounded-full transition duration-150">
+                    <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path></svg>
+                </button>
+                <h1 className="text-xl font-bold text-white">Глобальный Чат</h1>
+                <span className="ml-auto text-sm text-gray-500">50 последних сообщений</span>
+            </header>
+
+            {/* Messages Area */}
+            <div className="flex-grow p-4 overflow-y-auto space-y-4 custom-scrollbar">
+                {messages.map((msg, index) => (
+                    <div
+                        key={msg.id || index}
+                        className={`flex ${msg.senderID === currentUserId ? 'justify-end' : 'justify-start'}`}
+                    >
+                        <div className={`flex flex-col max-w-xs md:max-w-md ${msg.senderID === currentUserId ? 'items-end' : 'items-start'}`}>
+                            {msg.senderID !== currentUserId && (
+                                <span className="text-xs font-medium text-indigo-400 mb-1">
+                                    {msg.senderNickname || 'Аноним'}
+                                </span>
+                            )}
+                            <div className={`p-3 rounded-xl shadow-lg ${msg.senderID === currentUserId ? 'bg-indigo-600 rounded-br-none' : 'bg-gray-700 rounded-tl-none'}`}>
+                                <p className="text-sm break-words">{msg.text}</p>
+                            </div>
+                            <span className={`mt-1 text-xs text-gray-500 ${msg.senderID === currentUserId ? 'mr-1' : 'ml-1'}`}>
+                                {formatTimestamp(msg.timestamp)}
+                            </span>
+                        </div>
+                    </div>
+                ))}
+                <div ref={messagesEndRef} />
+            </div>
+
+            {/* Input Area */}
+            <footer className="p-4 bg-gray-800 border-t border-gray-700">
+                {isAnonymous ? (
+                    <div className="text-center p-3 bg-red-900/50 rounded-lg text-red-300">
+                        Только авторизованные пользователи могут отправлять сообщения.
+                    </div>
+                ) : (
+                    <form onSubmit={handleSendMessage} className="flex space-x-3">
+                        <input
+                            type="text"
+                            placeholder="Напишите сообщение..."
+                            value={messageInput}
+                            onChange={(e) => setMessageInput(e.target.value)}
+                            className="flex-grow p-3 rounded-lg bg-gray-700 text-white placeholder-gray-400 focus:ring-indigo-500 focus:border-indigo-500 border-transparent"
+                            disabled={isSending}
+                            required
+                        />
+                        <button
+                            type="submit"
+                            className="px-4 py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-lg transition duration-150 shadow-md flex items-center justify-center disabled:opacity-50"
+                            disabled={isSending || messageInput.trim().length === 0}
+                        >
+                            {isSending ? (
+                                <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                                </svg>
+                            ) : (
+                                <svg className="w-6 h-6 transform rotate-90" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"></path></svg>
+                            )}
+                        </button>
+                    </form>
+                )}
+            </footer>
+        </div>
+    );
+};
+
+/**
+ * @param {object} props
+ * @param {string} props.searchQuery
+ * @param {React.Dispatch<React.SetStateAction<string>>} props.setSearchQuery
+ * @param {object[]} props.searchResults
+ * @param {() => void} props.onBack
+ * @param {(e: React.FormEvent) => Promise<void>} props.handleSearchUsers
+ * @param {boolean} props.isSearching
+ * @param {string | null} props.userSearchError
+ */
+const UserSearchScreen = ({ searchQuery, setSearchQuery, searchResults, onBack, handleSearchUsers, isSearching, userSearchError }) => {
+    return (
+        <div className="flex flex-col h-screen bg-gray-900 text-white">
+            {/* Header */}
+            <header className="p-4 bg-gray-800 shadow-xl flex items-center border-b border-blue-500/50">
+                <button onClick={onBack} className="p-2 mr-3 text-blue-400 hover:text-blue-300 rounded-full transition duration-150">
+                    <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path></svg>
+                </button>
+                <h1 className="text-xl font-bold text-white">Поиск Пользователей</h1>
+            </header>
+
+            {/* Search Form */}
+            <form onSubmit={handleSearchUsers} className="p-4 bg-gray-800 border-b border-gray-700">
+                <div className="flex space-x-3">
+                    <input
+                        type="text"
+                        placeholder="Введите никнейм для поиска..."
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        className="flex-grow p-3 rounded-lg bg-gray-700 text-white placeholder-gray-400 focus:ring-blue-500 focus:border-blue-500 border-transparent"
+                        required
+                    />
+                    <button
+                        type="submit"
+                        className="px-4 py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg transition duration-150 shadow-md disabled:opacity-50"
+                        disabled={isSearching}
+                    >
+                        {isSearching ? (
+                            <svg className="animate-spin h-6 w-6 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                            </svg>
+                        ) : (
+                            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
+                        )}
+                    </button>
+                </div>
+            </form>
+
+            {/* Results Area */}
+            <main className="flex-grow p-4 overflow-y-auto space-y-3">
+                {userSearchError && (
+                    <div className="p-3 text-sm text-red-300 bg-red-900/50 rounded-lg border border-red-700">
+                        {userSearchError}
+                    </div>
+                )}
+                {searchResults.length > 0 ? (
+                    searchResults.map((userProfile) => (
+                        <div key={userProfile.uid} className="p-4 bg-gray-700 rounded-lg shadow-md flex items-center justify-between">
+                            <div>
+                                <p className="text-lg font-semibold text-white">{userProfile.nickname}</p>
+                                <p className="text-xs text-gray-400">ID: <span className="font-mono">{userProfile.uid}</span></p>
+                            </div>
+                            <span className="text-sm text-green-400 font-medium">Пользователь найден</span>
+                        </div>
+                    ))
+                ) : (
+                    !isSearching && !userSearchError && searchQuery.trim() && (
+                        <p className="text-center text-gray-500 mt-8">
+                            Введите никнейм выше для начала поиска.
+                        </p>
+                    )
+                )}
+            </main>
+        </div>
+    );
+};
+
+// --- Компонент приложения ---
 export default function App() {
-    // --- Firebase State ---
+    // --- Состояние Firebase ---
     const [db, setDb] = useState(null);
     const [auth, setAuth] = useState(null);
-    const [user, setUser] = useState(null);
+    /** @type {any} */
+    const [user, setUser] = useState(null); // Firebase User object
     const [isAuthReady, setIsAuthReady] = useState(false);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
-    
-    // --- App State ---
+
+    // --- Состояние приложения ---
     const [currentScreen, setCurrentScreen] = useState(Screen.AUTH);
     const [nickname, setNickname] = useState('');
 
-    // --- Chat/Message State ---
+    // --- Состояние чата/сообщений ---
+    /** @type {React.SetStateAction<Message[]>} */
     const [globalMessages, setGlobalMessages] = useState([]);
     const [messageInput, setMessageInput] = useState('');
     const [isSending, setIsSending] = useState(false);
 
-    // --- Search State ---
+    // --- Состояние поиска ---
     const [searchQuery, setSearchQuery] = useState('');
     const [searchResults, setSearchResults] = useState([]);
     const [isSearching, setIsSearching] = useState(false);
     const [userSearchError, setUserSearchError] = useState(null);
 
-    // --- Auth Form State ---
-    const [authEmail, setAuthEmail] = useState('');
-    const [authPassword, setAuthPassword] = useState('');
+    // --- Состояние формы аутентификации ---
+    const [authEmail, setAuthEmail] = useState("");
+    const [authPassword, setAuthPassword] = useState("");
     const [isRegisterMode, setIsRegisterMode] = useState(false);
-    const [authNickname, setAuthNickname] = useState('');
+    const [authNickname, setAuthNickname] = useState("");
     const [authError, setAuthError] = useState(null);
 
-    // --- Firebase Initialization and Auth ---
+    // --- Инициализация Firebase и Auth ---
     useEffect(() => {
-        if (firebaseConfig) {
-            try {
-                const app = initializeApp(firebaseConfig);
-                const authInstance = getAuth(app);
-                const dbInstance = getFirestore(app);
-                setAuth(authInstance);
-                setDb(dbInstance);
-
-                // Initial sign-in with custom token or anonymously
-                const initialSignIn = async (auth) => {
-                    try {
-                        // NOTE: If __initial_auth_token is provided, use it. Otherwise, sign in anonymously.
-                        // This ensures the app always has a user context for Firestore rules.
-                        if (initialAuthToken) {
-                            await signInWithCustomToken(auth, initialAuthToken);
-                        } else {
-                            await signInAnonymously(auth);
-                        }
-                    } catch (e) {
-                        console.error("Initial Auth Error:", e);
-                        setError("Ошибка начальной аутентификации.");
-                    }
-                    setIsAuthReady(true);
-                };
-
-                // Listen for authentication state changes
-                const unsubscribe = onAuthStateChanged(authInstance, (currentUser) => {
-                    setUser(currentUser);
-                    setLoading(false);
-
-                    if (currentUser && currentUser.uid) {
-                        // Check if user has a nickname set in the DB
-                        checkUserProfile(currentUser.uid, dbInstance);
-                    } else if (isAuthReady) {
-                        // If signed out, go to AUTH screen
-                        setCurrentScreen(Screen.AUTH);
-                    }
-                });
-
-                // Start the initial sign-in process
-                initialSignIn(authInstance);
-
-                return () => unsubscribe();
-            } catch (e) {
-                console.error("Firebase Init Error:", e);
-                setError("Ошибка инициализации Firebase. Проверьте конфигурацию.");
-                setLoading(false);
-            }
-        } else {
+        if (!firebaseConfig) {
             setError("Конфигурация Firebase недоступна.");
             setLoading(false);
+            return;
         }
-    }, []);
 
-    // --- User Profile Management ---
+        try {
+            const app = initializeApp(firebaseConfig);
+            const authInstance = getAuth(app);
+            const dbInstance = getFirestore(app);
+            setAuth(authInstance);
+            setDb(dbInstance);
 
-    // Fetch user's nickname and set it, or redirect to AUTH if nickname is missing
-    const checkUserProfile = useCallback(async (uid, db) => {
-        const userRef = doc(db, getPublicCollectionPath('users'), uid);
-        const userSnap = await getDoc(userRef);
+            // Первоначальный вход с помощью пользовательского токена или анонимно
+            const initialSignIn = async (auth) => {
+                try {
+                    // ПРИМЕЧАНИЕ: Если предоставлен __initial_auth_token, используйте его.
+                    // В противном случае войдите в систему анонимно.
+                    if (initialAuthToken) {
+                        await signInWithCustomToken(auth, initialAuthToken);
+                    } else {
+                        await signInAnonymously(auth);
+                    }
+                } catch (e) {
+                    console.error("Ошибка начальной авторизации:", e);
+                    setError("Ошибка начальной аутентификации.");
+                }
+                setIsAuthReady(true);
+            };
 
-        if (userSnap.exists() && userSnap.data().nickname) {
-            setNickname(userSnap.data().nickname);
-            setCurrentScreen(Screen.CHATS_LIST);
-        } else if (user && user.isAnonymous) {
-             // Allow anonymous users to proceed to the main screen, but they cannot chat
-             setNickname("Аноним");
-             setCurrentScreen(Screen.CHATS_LIST);
-        } else {
-            // New registered user (Email/Google) without a nickname
-            setCurrentScreen(Screen.AUTH);
-            // Don't set a global error here, let the AuthScreen handle the prompt
+            // Прослушивание изменений состояния аутентификации
+            const unsubscribe = onAuthStateChanged(authInstance, (currentUser) => {
+                setUser(currentUser);
+                setLoading(false);
+                if (currentUser && currentUser.uid) {
+                    // Проверьте, есть ли у пользователя ник, установленный в базе данных
+                    checkUserProfile(currentUser.uid, dbInstance);
+                } else if (isAuthReady) {
+                    // Если выполнен выход, перейдите на экран авторизации
+                    setCurrentScreen(Screen.AUTH);
+                }
+            });
+
+            // Запуск процесса первоначальной авторизации
+            initialSignIn(authInstance);
+            return () => unsubscribe();
+        } catch (e) {
+            console.error("Ошибка инициализации Firebase:", e);
+            setError("Ошибка инициализации Firebase. Проверьте конфигурацию.");
+            setLoading(false);
+        }
+    }, [isAuthReady]); // Add isAuthReady as dependency to ensure we only run initialSignIn once
+
+    // --- Управление профилем пользователя ---
+    // Извлеките ник пользователя и установите его или перенаправьте на AUTH, если ник отсутствует
+    const checkUserProfile = useCallback(async (uid, dbInstance) => {
+        const userRef = doc(dbInstance, getPublicCollectionPath('users'), uid);
+        try {
+            const userSnap = await getDoc(userRef);
+            if (userSnap.exists() && userSnap.data().nickname) {
+                setNickname(userSnap.data().nickname);
+                setCurrentScreen(Screen.CHATS_LIST);
+            } else if (user && user.isAnonymous) {
+                // Разрешаем анонимным пользователям переходить на главный экран, но они не могут общаться в чате
+                setNickname("Аноним");
+                setCurrentScreen(Screen.CHATS_LIST);
+            } else {
+                // Новый зарегистрированный пользователь (Email/Google) без ника
+                setAuthError("Пожалуйста, придумайте никнейм для вашего аккаунта.");
+                setCurrentScreen(Screen.AUTH);
+            }
+        } catch (e) {
+            console.error("Ошибка при проверке профиля:", e);
+            setError("Не удалось загрузить профиль пользователя.");
         }
     }, [user]);
 
-    // Save a new nickname for the user
+    // Сохраните новый ник для пользователя
     const saveNickname = useCallback(async (uid, newNickname, email = 'N/A', photoURL = null) => {
-        if (!db || !uid || !newNickname) return;
-        
-        // 1. Check if nickname is already taken (case-insensitive approximation)
-        const q = query(
-            collection(db, getPublicCollectionPath('users')), 
-            where('nicknameLower', '==', newNickname.toLowerCase())
-        );
-        const snapshot = await getDocs(q);
-        
-        if (!snapshot.empty) {
-            setAuthError("Этот никнейм уже занят. Выберите другой.");
+        if (!db || !uid || !newNickname || newNickname.trim().length < 2) {
+            setAuthError("Никнейм должен содержать не менее 2 символов.");
             return false;
         }
 
-        // 2. Save the nickname
-        const userRef = doc(db, getPublicCollectionPath('users'), uid);
-        await setDoc(userRef, {
-            uid: uid,
-            nickname: newNickname,
-            nicknameLower: newNickname.toLowerCase(), // For case-insensitive searching
-            email: email,
-            photoURL: photoURL,
-        }, { merge: true });
-        
-        setNickname(newNickname);
-        setCurrentScreen(Screen.CHATS_LIST);
         setAuthError(null);
-        return true;
+        const nicknameTrimmed = newNickname.trim();
+
+        try {
+            // 1. Проверьте, уже ли взят ник (приближение без учета регистра)
+            const q = query(
+                collection(db, getPublicCollectionPath('users')),
+                where('nicknameLower', '==', nicknameTrimmed.toLowerCase())
+            );
+            const snapshot = await getDocs(q);
+            if (!snapshot.empty) {
+                setAuthError("Этот никнейм уже занят. Выберите другой вариант. ");
+                return false;
+            }
+
+            // 2. Сохраните никнейм
+            const userRef = doc(db, getPublicCollectionPath('users'), uid);
+            await setDoc(userRef, {
+                uid: uid,
+                nickname: nicknameTrimmed,
+                nicknameLower: nicknameTrimmed.toLowerCase(), // Для поиска без учета регистра
+                email: email,
+                photoURL: photoURL,
+                createdAt: serverTimestamp(),
+            }, { merge: true });
+
+            setNickname(nicknameTrimmed);
+            setCurrentScreen(Screen.CHATS_LIST);
+            setAuthError(null);
+            return true;
+        } catch (e) {
+            console.error("Ошибка сохранения никнейма:", e);
+            setAuthError(`Ошибка сохранения никнейма: ${e.message}`);
+            return false;
+        }
     }, [db]);
 
+    const handleSaveNickname = async () => {
+        if (user && user.uid) {
+            await saveNickname(user.uid, authNickname, user.email || 'N/A', user.photoURL);
+        } else {
+            setAuthError("Сначала необходимо авторизоваться.");
+        }
+    };
 
-    // --- Authentication Handlers ---
-
-    // Handle Email/Password Registration
+    // --- Обработчики аутентификации ---
+    // Обрабатывают регистрацию электронной почты / пароля
     const handleRegister = async () => {
         if (!authNickname) {
             setAuthError("Никнейм обязателен для регистрации.");
@@ -200,53 +643,53 @@ export default function App() {
         setAuthError(null);
         try {
             const userCredential = await createUserWithEmailAndPassword(auth, authEmail, authPassword);
-            // On successful registration, save the nickname
+            // При успешной регистрации saveNickname будет вызван через onAuthStateChanged -> checkUserProfile,
+            // но мы вызываем его здесь, чтобы сразу сохранить никнейм.
             await saveNickname(userCredential.user.uid, authNickname, authEmail);
         } catch (e) {
-            console.error("Registration Error:", e);
+            console.error("Ошибка регистрации:", e);
             setAuthError(`Ошибка регистрации: ${e.message}`);
         }
     };
 
-    // Handle Email/Password Login
+    // Обработайте адрес электронной почты / пароль для входа
     const handleLogin = async () => {
         setAuthError(null);
         try {
             await signInWithEmailAndPassword(auth, authEmail, authPassword);
-            // onAuthStateChanged will handle navigation and profile check
+            // onAuthStateChanged будет обрабатывать навигацию и проверку профиля
         } catch (e) {
-            console.error("Login Error:", e);
+            console.error("Ошибка входа в систему:", e);
             setAuthError(`Ошибка входа: ${e.message}`);
         }
     };
-    
-    // Handle Google Sign-In
+
+    // Обработайте вход в Google
     const handleGoogleSignIn = async () => {
-        if (!auth) return;
+        if (!auth || !db) return;
         setAuthError(null);
         try {
             const provider = new GoogleAuthProvider();
             const result = await signInWithPopup(auth, provider);
             const googleUser = result.user;
 
-            // Check if this is a first-time sign-in (registration)
             const userRef = doc(db, getPublicCollectionPath('users'), googleUser.uid);
             const userSnap = await getDoc(userRef);
 
             if (!userSnap.exists() || !userSnap.data().nickname) {
-                // First-time Google user: switch to nickname setup mode
-                setAuthEmail(googleUser.email || '');
-                setAuthPassword('GOOGLE_AUTH'); // Marker for AuthScreen
-                setIsRegisterMode(true); 
-                setAuthNickname(googleUser.displayName || ''); 
-                setError("Пожалуйста, придумайте никнейм для вашего аккаунта Google.");
+                // Первый пользователь Google: переключитесь в режим настройки псевдонима
+                setAuthEmail(googleUser.email || "");
+                setAuthPassword('GOOGLE_AUTH'); // Маркер для AuthScreen
+                setIsRegisterMode(true);
+                setAuthNickname(googleUser.displayName || "");
+                setAuthError("Пожалуйста, придумайте никнейм для вашего аккаунта Google.");
+                // onAuthStateChanged будет вызван, но мы останемся на экране AUTH для установки никнейма
             } else {
-                // Existing user: onAuthStateChanged handles navigation
+                // Существующий пользователь: onAuthStateChanged обрабатывает навигацию
                 setNickname(userSnap.data().nickname);
             }
-
         } catch (e) {
-            console.error("Google Sign-In Error:", e);
+            console.error("Ошибка входа через Google:", e);
             setAuthError(`Ошибка входа через Google: ${e.message}`);
         }
     };
@@ -264,36 +707,35 @@ export default function App() {
         }
     };
 
-    // --- Global Chat Logic ---
-    
-    // Fetch real-time global messages
+    // --- Логика глобального чата ---
+    // Получение глобальных сообщений в реальном времени
     useEffect(() => {
         if (!db || !user || !isAuthReady || currentScreen !== Screen.GLOBAL_CHAT) return;
-        
+
         const messagesCol = collection(db, getPublicCollectionPath('globalChatMessages'));
-        // Query last 50 messages, sorted by timestamp
+        // Запрос последних 50 сообщений, отсортированных по времени создания
         const q = query(messagesCol, orderBy('timestamp', 'desc'), limit(50));
 
         const unsubscribe = onSnapshot(q, (snapshot) => {
             const msgs = snapshot.docs.map(doc => ({
                 id: doc.id,
                 ...doc.data()
-            })).reverse(); // Reverse to display in chronological order
+            })).reverse(); // Обратное отображение в хронологическом порядке
             setGlobalMessages(msgs);
         }, (e) => {
-            console.error("Error fetching global messages:", e);
+            console.error("Ошибка при получении глобальных сообщений:", e);
             setError("Ошибка загрузки сообщений общего чата.");
         });
 
         return () => unsubscribe();
     }, [db, user, isAuthReady, currentScreen]);
 
-    // Send a message to the global chat
+    // Отправить сообщение в глобальный чат
     const handleSendMessage = async (e) => {
         e.preventDefault();
         if (!db || !messageInput.trim() || !user || user.isAnonymous || !nickname) {
-            // Anonymous users cannot send messages
-            setError("Для отправки сообщений требуется авторизация (Email/Google) и никнейм.");
+            // Анонимные пользователи не могут отправлять сообщения
+            setError("Для отправки сообщений требуется авторизация (Электронная почта/Google) и никнейм.");
             return;
         }
 
@@ -303,22 +745,21 @@ export default function App() {
             await addDoc(messagesCol, {
                 text: messageInput.trim(),
                 timestamp: serverTimestamp(),
-                senderId: user.uid,
+                senderID: user.uid,
                 senderNickname: nickname,
                 senderPhoto: user.photoURL || null,
             });
-            setMessageInput('');
+            setMessageInput("");
         } catch (e) {
-            console.error("Error sending message:", e);
+            console.error("Сообщение об ошибке отправки:", e);
             setError("Ошибка отправки сообщения.");
         } finally {
             setIsSending(false);
         }
     };
 
-    // --- User Search Logic (Fixing "I cannot find a friend") ---
-    
-    // Search users by nickname
+    // --- Логика поиска пользователя ---
+    // Поиск пользователей по нику
     const handleSearchUsers = async (e) => {
         e.preventDefault();
         if (!db || !searchQuery.trim()) {
@@ -332,14 +773,12 @@ export default function App() {
 
         try {
             const usersCol = collection(db, getPublicCollectionPath('users'));
-            
-            // Search for nicknames that are exactly equal to the search term (case-insensitive via nicknameLower field)
+            // Поиск псевдонимов, которые в точности соответствуют поисковому запросу (без учета регистра через поле nicknameLower)
             const q = query(
-                usersCol, 
+                usersCol,
                 where('nicknameLower', '==', searchTermLower),
                 limit(10)
             );
-            
             const snapshot = await getDocs(q);
 
             if (snapshot.empty) {
@@ -352,7 +791,6 @@ export default function App() {
                 setSearchResults(results);
                 setUserSearchError(null);
             }
-
         } catch (e) {
             console.error("User Search Error:", e);
             setUserSearchError("Произошла ошибка при поиске пользователей.");
@@ -362,519 +800,90 @@ export default function App() {
     };
 
     // --- UI Rendering Functions ---
-
-    // The main loading/error state
     if (loading) {
-        return <LoadingScreen message="Загрузка приложения..." />;
+        return <LoadingScreen message="Подключение к Firebase..." />;
     }
 
-    if (error && currentScreen !== Screen.AUTH) {
-         return <ErrorScreen message={error} onDismiss={() => setError(null)} />;
+    if (error) {
+        // Если есть глобальная ошибка, показываем ее, сбрасывая state после попытки
+        return <ErrorDisplay message={error} onRetry={() => {
+            setError(null);
+            setLoading(true);
+            setIsAuthReady(false); // Запуск повторной инициализации через useEffect
+        }} />;
     }
-    
-    // 1. AUTH SCREEN
+
+    // 1. ЭКРАН АВТОРИЗАЦИИ / УСТАНОВКИ НИКНЕЙМА
     if (currentScreen === Screen.AUTH || !user || (!nickname && !user.isAnonymous)) {
         return (
-            <AuthScreen 
-                isRegisterMode={isRegisterMode}
-                setIsRegisterMode={setIsRegisterMode}
+            <AuthScreen
                 authEmail={authEmail}
                 setAuthEmail={setAuthEmail}
                 authPassword={authPassword}
                 setAuthPassword={setAuthPassword}
+                isRegisterMode={isRegisterMode}
+                setIsRegisterMode={setIsRegisterMode}
                 authNickname={authNickname}
                 setAuthNickname={setAuthNickname}
+                authError={authError}
                 handleRegister={handleRegister}
                 handleLogin={handleLogin}
                 handleGoogleSignIn={handleGoogleSignIn}
-                authError={authError || error}
-                isNicknameRequired={!user?.isAnonymous && (isRegisterMode || authPassword === 'GOOGLE_AUTH')}
-                saveNickname={saveNickname}
-                user={user}
-                setAuthError={setAuthError}
+                handleSaveNickname={handleSaveNickname}
+                isAnonymous={user?.isAnonymous || false}
             />
         );
     }
-    
-    // 2. CHATS LIST SCREEN
+
+    // 2. ЭКРАН СПИСКА ЧАТОВ
     if (currentScreen === Screen.CHATS_LIST) {
         return (
             <ChatListScreen
                 nickname={nickname}
-                onOpenGlobalChat={() => setCurrentScreen(Screen.GLOBAL_CHAT)}
-                onSearchUsers={() => setCurrentScreen(Screen.USER_SEARCH)}
-                onSignOut={handleSignOut}
                 userId={user.uid}
+                onGlobalChat={() => setCurrentScreen(Screen.GLOBAL_CHAT)}
+                onSearchUsers={() => {
+                    setCurrentScreen(Screen.USER_SEARCH);
+                    setSearchResults([]); // Сбросить результаты при входе
+                    setSearchQuery('');
+                    setUserSearchError(null);
+                }}
+                onSignOut={handleSignOut}
             />
         );
     }
 
-    // 3. GLOBAL CHAT SCREEN
+    // 3. ЭКРАН ГЛОБАЛЬНОГО ЧАТА
     if (currentScreen === Screen.GLOBAL_CHAT) {
         return (
             <GlobalChatScreen
-                nickname={nickname}
                 messages={globalMessages}
                 messageInput={messageInput}
                 setMessageInput={setMessageInput}
+                onBack={() => setCurrentScreen(Screen.CHATS_LIST)}
                 handleSendMessage={handleSendMessage}
                 isSending={isSending}
-                onBack={() => setCurrentScreen(Screen.CHATS_LIST)}
                 currentUserId={user.uid}
+                isAnonymous={user.isAnonymous}
             />
         );
     }
 
-    // 4. USER SEARCH SCREEN
+    // 4. ЭКРАН ПОИСКА ПОЛЬЗОВАТЕЛЕЙ
     if (currentScreen === Screen.USER_SEARCH) {
         return (
             <UserSearchScreen
                 searchQuery={searchQuery}
                 setSearchQuery={setSearchQuery}
-                handleSearchUsers={handleSearchUsers}
                 searchResults={searchResults}
+                onBack={() => setCurrentScreen(Screen.CHATS_LIST)}
+                handleSearchUsers={handleSearchUsers}
                 isSearching={isSearching}
                 userSearchError={userSearchError}
-                onBack={() => setCurrentScreen(Screen.CHATS_LIST)}
             />
         );
     }
 
-    // Default fallback
-    return <LoadingScreen message="Неизвестное состояние приложения..." />;
+    // Резервный вариант по умолчанию
+    return <LoadingScreen message="Перенаправление..." />;
 }
-
-// =========================================================================
-// --- Sub-Components ---
-// =========================================================================
-
-// --- Loading Component ---
-const LoadingScreen = ({ message }) => (
-    <div className="flex items-center justify-center min-h-screen bg-gray-900 text-white">
-        <div className="flex flex-col items-center">
-            <svg className="animate-spin h-8 w-8 text-indigo-400 mb-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-            </svg>
-            <p className="text-lg">{message}</p>
-        </div>
-    </div>
-);
-
-// --- Error Component ---
-const ErrorScreen = ({ message, onDismiss }) => (
-    <div className="fixed inset-0 bg-black bg-opacity-70 z-50 flex items-center justify-center p-4">
-        <div className="bg-red-800 text-white p-6 rounded-lg shadow-xl max-w-sm w-full space-y-4">
-            <h2 className="text-xl font-bold">Ошибка</h2>
-            <p className="text-sm">{message}</p>
-            {onDismiss && (
-                <button
-                    onClick={onDismiss}
-                    className="w-full bg-red-600 hover:bg-red-500 text-white font-semibold py-2 rounded-lg transition duration-150"
-                >
-                    Закрыть
-                </button>
-            )}
-        </div>
-    </div>
-);
-
-
-// --- Auth Screen ---
-const AuthScreen = ({ 
-    isRegisterMode, setIsRegisterMode, authEmail, setAuthEmail, authPassword, 
-    setAuthPassword, authNickname, setAuthNickname, handleRegister, handleLogin, 
-    handleGoogleSignIn, authError, isNicknameRequired, saveNickname, user, setAuthError
-}) => {
-    
-    const [tempNickname, setTempNickname] = useState(authNickname);
-    const [isSaving, setIsSaving] = useState(false);
-
-    // Update tempNickname when authNickname changes (e.g., after Google sign-in pre-fills it)
-    useEffect(() => {
-        setTempNickname(authNickname);
-    }, [authNickname]);
-
-    // If user is authenticated but needs to set nickname (e.g., after Google sign-in)
-    const handleNicknameSave = async () => {
-        if (!user || !user.uid || !tempNickname.trim()) return;
-        setAuthError(null);
-        setIsSaving(true);
-        const success = await saveNickname(user.uid, tempNickname, user.email || 'N/A', user.photoURL || null);
-        if (!success) {
-            setIsSaving(false);
-        }
-    };
-    
-    // Determine the main action button text
-    const actionText = isRegisterMode ? 'Зарегистрироваться' : 'Войти';
-    const mainAction = isRegisterMode ? handleRegister : handleLogin;
-
-    const showNicknameSetup = isNicknameRequired && user && authPassword === 'GOOGLE_AUTH';
-    const canSubmit = (authEmail && authPassword) && (!isRegisterMode || authNickname);
-    const nicknameIsFilled = tempNickname.trim().length > 0;
-
-    return (
-        <div className="flex items-center justify-center min-h-screen bg-gray-900 p-4">
-            <div className="bg-gray-800 p-8 rounded-xl shadow-2xl w-full max-w-sm space-y-6 text-white">
-                <h1 className="text-3xl font-bold text-center text-indigo-400">
-                    {showNicknameSetup ? 'Установить Никнейм' : actionText}
-                </h1>
-                
-                {authError && (
-                    <div className="bg-red-700 p-3 rounded-lg text-sm text-center">
-                        {authError}
-                    </div>
-                )}
-
-                {/* Nickname Form (required after social sign-in or for registration) */}
-                {showNicknameSetup ? (
-                    <div className="space-y-4">
-                        <input
-                            type="text"
-                            placeholder="Ваш никнейм"
-                            value={tempNickname}
-                            onChange={(e) => setTempNickname(e.target.value)}
-                            className="w-full p-3 rounded-lg bg-gray-700 border border-gray-600 focus:ring-indigo-500 focus:border-indigo-500 text-white"
-                        />
-                         <button
-                            onClick={handleNicknameSave}
-                            disabled={!nicknameIsFilled || isSaving}
-                            className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 rounded-lg transition duration-150 disabled:opacity-50"
-                        >
-                            {isSaving ? 'Сохранение...' : 'Продолжить'}
-                        </button>
-                    </div>
-                ) : (
-                    // Email/Password Form
-                    <div className="space-y-4">
-                        <input
-                            type="email"
-                            placeholder="Email"
-                            value={authEmail}
-                            onChange={(e) => setAuthEmail(e.target.value)}
-                            className="w-full p-3 rounded-lg bg-gray-700 border border-gray-600 focus:ring-indigo-500 focus:border-indigo-500 text-white"
-                        />
-                        <input
-                            type="password"
-                            placeholder="Пароль"
-                            value={authPassword}
-                            onChange={(e) => setAuthPassword(e.target.value)}
-                            className="w-full p-3 rounded-lg bg-gray-700 border border-gray-600 focus:ring-indigo-500 focus:border-indigo-500 text-white"
-                        />
-                        {isRegisterMode && (
-                            <input
-                                type="text"
-                                placeholder="Никнейм (обязательно)"
-                                value={authNickname}
-                                onChange={(e) => setAuthNickname(e.target.value)}
-                                className="w-full p-3 rounded-lg bg-gray-700 border border-gray-600 focus:ring-indigo-500 focus:border-indigo-500 text-white"
-                            />
-                        )}
-                        <button
-                            onClick={mainAction}
-                            disabled={!canSubmit}
-                            className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 rounded-lg transition duration-150 disabled:opacity-50"
-                        >
-                            {actionText}
-                        </button>
-
-                        <div className="text-center text-sm">
-                            <button
-                                onClick={() => {
-                                    setIsRegisterMode(!isRegisterMode);
-                                    setAuthError(null);
-                                }}
-                                className="text-indigo-400 hover:text-indigo-300 transition duration-150"
-                            >
-                                {isRegisterMode ? 'Уже есть аккаунт? Войти' : 'Нет аккаунта? Зарегистрироваться'}
-                            </button>
-                        </div>
-                        
-                        {/* Social Auth Providers */}
-                        <div className="relative pt-4">
-                            <div className="absolute inset-0 flex items-center">
-                                <div className="w-full border-t border-gray-700"></div>
-                            </div>
-                            <div className="relative flex justify-center text-sm">
-                                <span className="px-2 bg-gray-800 text-gray-400">
-                                    Или войти с
-                                </span>
-                            </div>
-                        </div>
-
-                        <button
-                            onClick={handleGoogleSignIn}
-                            className="w-full flex items-center justify-center space-x-3 px-4 py-3 border border-transparent text-base font-medium rounded-lg text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 transition duration-150 ease-in-out ring-offset-gray-800"
-                        >
-                            {/* Google SVG Icon */}
-                            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 48 48">
-                                <path d="M44.5 20H24v8.5h11.8C35.4 33.9 33.6 37 31 39.4l7.9 6.1C45.3 40.5 48 34.6 48 28.5c0-1.9-.3-3.8-.8-5.6H44.5z" fill="#4285F4"/>
-                                <path d="M24 48c6.4 0 11.9-2.1 15.8-5.8l-7.9-6.1c-2.3 1.5-5.2 2.4-7.9 2.4-6.5 0-12-4.4-14-10.3l-8 6.2C6.5 44 14.7 48 24 48z" fill="#34A853"/>
-                                <path d="M10 28.5c0-1.9.5-3.8 1.4-5.4L3.4 16.9C1.2 20.2 0 24.2 0 28.5c0 4.3 1.2 8.3 3.4 11.6l7.9-6.2c-.9-1.6-1.3-3.5-1.3-5.4z" fill="#FBBC05"/>
-                                <path d="M24 10.3c3.1 0 5.9 1.1 8.1 3.1l6.7-6.7C35.9 2.3 30.3 0 24 0 14.7 0 6.5 4 1.7 10.3l7.9 6.2c2-5.9 7.5-10.3 14.4-10.3z" fill="#EA4335"/>
-                            </svg>
-                            <span>Google</span>
-                        </button>
-                    </div>
-                )}
-            </div>
-        </div>
-    );
-};
-
-
-// --- Chat List Screen ---
-const ChatListScreen = ({ nickname, onOpenGlobalChat, onSearchUsers, onSignOut, userId }) => (
-    <div className="flex flex-col h-screen bg-gray-900 text-white">
-        {/* Header */}
-        <header className="flex justify-between items-center p-4 bg-gray-800 shadow-md">
-            <div className="flex items-center">
-                <h1 className="text-xl font-bold text-indigo-400 mr-4">Ваши Чаты</h1>
-                <span className="text-sm text-gray-400">({nickname})</span>
-            </div>
-            <div className="flex items-center space-x-3">
-                <button 
-                    onClick={onSearchUsers}
-                    className="p-2 rounded-full bg-indigo-600 hover:bg-indigo-700 transition duration-150"
-                    title="Поиск друзей"
-                >
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                    </svg>
-                </button>
-                <button 
-                    onClick={onSignOut}
-                    className="p-2 rounded-full bg-red-600 hover:bg-red-700 transition duration-150"
-                    title="Выйти"
-                >
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1m-6-4v1m6-4V8m-6 4H7" />
-                    </svg>
-                </button>
-            </div>
-        </header>
-
-        {/* User ID for easy debugging/sharing */}
-        <div className="p-2 bg-gray-700 text-gray-400 text-xs truncate">
-            Ваш ID: {userId}
-        </div>
-
-        {/* Chat List */}
-        <div className="flex-grow overflow-y-auto p-4 space-y-2">
-            
-            {/* General Chat Entry (New Feature) */}
-            <div 
-                onClick={onOpenGlobalChat}
-                className="flex items-center p-3 rounded-xl bg-indigo-600 hover:bg-indigo-700 transition duration-150 cursor-pointer shadow-lg"
-            >
-                <div className="flex-shrink-0 mr-4">
-                    <div className="h-10 w-10 bg-indigo-400 rounded-full flex items-center justify-center text-lg font-bold">
-                        G
-                    </div>
-                </div>
-                <div className="flex-grow">
-                    <p className="font-semibold text-lg">Общий Чат</p>
-                    <p className="text-sm text-indigo-200 truncate">Общайтесь со всеми пользователями приложения!</p>
-                </div>
-                <span className="text-xs text-indigo-200">24/7</span>
-            </div>
-            
-            {/* Placeholder for Private Chats */}
-            <div className="p-3 bg-gray-700 rounded-xl text-center text-gray-400 italic">
-                (Приватные чаты появятся здесь после реализации)
-            </div>
-        </div>
-    </div>
-);
-
-
-// --- Global Chat Screen ---
-const GlobalChatScreen = ({ nickname, messages, messageInput, setMessageInput, handleSendMessage, isSending, onBack, currentUserId }) => {
-    
-    // Auto-scroll to bottom of messages
-    const messagesEndRef = React.useRef(null);
-    const scrollToBottom = () => {
-        messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-    };
-
-    // Scroll on message load/send
-    useEffect(scrollToBottom, [messages]);
-    
-    return (
-        <div className="flex flex-col h-screen bg-gray-900 text-white">
-            {/* Header */}
-            <header className="flex items-center p-4 bg-gray-800 shadow-md">
-                <button 
-                    onClick={onBack}
-                    className="p-1 rounded-full text-indigo-400 hover:text-indigo-300 mr-3 transition duration-150"
-                    title="Назад к чатам"
-                >
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M10 19l-7-7m0 0l7-7m-7 7h18" />
-                    </svg>
-                </button>
-                <h1 className="text-xl font-bold text-indigo-400">Общий Чат ({nickname})</h1>
-            </header>
-
-            {/* Messages Area */}
-            <div className="flex-grow overflow-y-auto p-4 space-y-4">
-                {messages.length === 0 ? (
-                    <div className="text-center text-gray-500 italic mt-10">
-                        Сообщений пока нет. Будьте первыми!
-                    </div>
-                ) : (
-                    messages.map((msg, index) => (
-                        <ChatMessage 
-                            key={msg.id || index} 
-                            msg={msg} 
-                            isOwnMessage={msg.senderId === currentUserId}
-                        />
-                    ))
-                )}
-                <div ref={messagesEndRef} />
-            </div>
-
-            {/* Message Input */}
-            <footer className="p-4 bg-gray-800 shadow-md">
-                <form onSubmit={handleSendMessage} className="flex space-x-3">
-                    <input
-                        type="text"
-                        value={messageInput}
-                        onChange={(e) => setMessageInput(e.target.value)}
-                        placeholder="Введите сообщение..."
-                        className="flex-grow p-3 rounded-full bg-gray-700 border border-gray-600 focus:ring-indigo-500 focus:border-indigo-500 text-white"
-                        disabled={isSending || !nickname || nickname === "Аноним"}
-                    />
-                    <button
-                        type="submit"
-                        disabled={!messageInput.trim() || isSending || !nickname || nickname === "Аноним"}
-                        className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold p-3 rounded-full transition duration-150 disabled:opacity-50 flex items-center justify-center"
-                        title="Отправить"
-                    >
-                        <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
-                        </svg>
-                    </button>
-                </form>
-                {nickname === "Аноним" && (
-                    <p className="text-red-400 text-xs mt-2">Для отправки сообщений необходимо Войти/Зарегистрироваться.</p>
-                )}
-            </footer>
-        </div>
-    );
-};
-
-// --- Chat Message Component ---
-const ChatMessage = ({ msg, isOwnMessage }) => {
-    // Format timestamp if available
-    const time = msg.timestamp?.seconds 
-        ? new Date(msg.timestamp.seconds * 1000).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
-        : '...';
-
-    const baseClasses = "max-w-xs md:max-w-md lg:max-w-lg p-3 rounded-xl shadow-md";
-    const ownClasses = "ml-auto bg-indigo-600 text-white rounded-br-none";
-    const otherClasses = "mr-auto bg-gray-700 text-white rounded-bl-none";
-
-    return (
-        <div className={`flex ${isOwnMessage ? 'justify-end' : 'justify-start'}`}>
-            <div className={`${baseClasses} ${isOwnMessage ? ownClasses : otherClasses}`}>
-                {!isOwnMessage && (
-                    <p className="font-bold text-indigo-300 text-sm mb-1">{msg.senderNickname}</p>
-                )}
-                <p className="text-sm break-words">{msg.text}</p>
-                <div className={`text-xs mt-1 ${isOwnMessage ? 'text-indigo-200' : 'text-gray-400'} text-right`}>
-                    {time}
-                </div>
-            </div>
-        </div>
-    );
-};
-
-
-// --- User Search Screen (Fixes "cannot find a friend") ---
-const UserSearchScreen = ({ searchQuery, setSearchQuery, handleSearchUsers, searchResults, isSearching, userSearchError, onBack }) => (
-    <div className="flex flex-col h-screen bg-gray-900 text-white">
-        {/* Header */}
-        <header className="flex items-center p-4 bg-gray-800 shadow-md">
-            <button 
-                onClick={onBack}
-                className="p-1 rounded-full text-indigo-400 hover:text-indigo-300 mr-3 transition duration-150"
-                title="Назад к чатам"
-            >
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M10 19l-7-7m0 0l7-7m-7 7h18" />
-                </svg>
-            </button>
-            <h1 className="text-xl font-bold text-indigo-400">Поиск Пользователей</h1>
-        </header>
-
-        {/* Search Input */}
-        <div className="p-4 bg-gray-800 border-b border-gray-700">
-            <form onSubmit={handleSearchUsers} className="flex space-x-3">
-                <input
-                    type="text"
-                    placeholder="Введите никнейм для поиска..."
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    className="flex-grow p-3 rounded-lg bg-gray-700 border border-gray-600 focus:ring-indigo-500 focus:border-indigo-500 text-white"
-                />
-                <button
-                    type="submit"
-                    disabled={isSearching}
-                    className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold p-3 rounded-lg transition duration-150 disabled:opacity-50 flex items-center justify-center"
-                >
-                    {isSearching ? (
-                        <svg className="animate-spin h-6 w-6 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                        </svg>
-                    ) : (
-                        <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                        </svg>
-                    )}
-                </button>
-            </form>
-        </div>
-
-        {/* Search Results */}
-        <div className="flex-grow overflow-y-auto p-4 space-y-2">
-            {userSearchError && (
-                <div className="p-3 bg-red-700 rounded-lg text-white">
-                    {userSearchError}
-                </div>
-            )}
-            {searchResults.length > 0 && (
-                <div className="text-gray-400 text-sm mb-2">Найдено пользователей: {searchResults.length}</div>
-            )}
-            
-            {searchResults.map(user => (
-                <div key={user.uid} className="flex items-center p-3 rounded-xl bg-gray-700 hover:bg-gray-600 transition duration-150 shadow-md">
-                    <div className="flex-shrink-0 mr-4">
-                        <div className="h-10 w-10 bg-indigo-500 rounded-full flex items-center justify-center text-lg font-bold">
-                            {user.nickname.charAt(0).toUpperCase()}
-                        </div>
-                    </div>
-                    <div className="flex-grow">
-                        <p className="font-semibold text-lg">{user.nickname}</p>
-                        <p className="text-sm text-gray-400 truncate">UID: {user.uid}</p>
-                    </div>
-                    <button 
-                        className="bg-indigo-500 hover:bg-indigo-600 text-white text-sm py-1 px-3 rounded-full"
-                        title="Начать приватный чат"
-                        // onClick={() => onStartPrivateChat(user)} // Future feature
-                    >
-                        Написать
-                    </button>
-                </div>
-            ))}
-            
-            {!isSearching && searchQuery.trim() && searchResults.length === 0 && !userSearchError && (
-                <div className="p-3 text-center text-gray-500 italic">
-                    Введите никнейм и нажмите поиск.
-                </div>
-            )}
-        </div>
-    </div>
-);
