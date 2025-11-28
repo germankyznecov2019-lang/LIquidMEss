@@ -9,7 +9,8 @@
     <!-- Firebase SDK Modules -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, updateProfile, onAuthStateChanged, signOut, signInWithCustomToken, sendSignInLinkToEmail, isSignInWithEmailLink, signInWithEmailLink } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getAuth, updateProfile, onAuthStateChanged, signOut, signInWithCustomToken, 
+                 createUserWithEmailAndPassword, signInWithEmailAndPassword, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, setDoc, collection, query, where, onSnapshot, getDocs, addDoc, serverTimestamp, orderBy, limit } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         
         // --- GLOBAL APP STATE & FIREBASE INIT ---
@@ -18,6 +19,7 @@
             user: null,
             loading: true,
             currentScreen: 'auth', // 'auth', 'welcome', 'chatList', 'chat'
+            authStep: 'select-provider', // 'select-provider', 'email-password'
             activeChat: null,
             authError: '',
             nicknameError: '',
@@ -28,13 +30,14 @@
             showCreateGroupModal: false,
             searchQuery: '',
             searchResults: [],
-            isSearching: false
+            isSearching: false,
+            selectedProvider: null // 'apple' or 'google' - for visual only
         };
 
         let app, auth, db, appId;
 
         const getFirebaseConfig = () => {
-            // 1. КОНФИГУРАЦИЯ ПОЛЬЗОВАТЕЛЯ (Вставлена по запросу)
+            // КОНФИГУРАЦИЯ ПОЛЬЗОВАТЕЛЯ (Вставлена по запросу)
             const USER_FIREBASE_CONFIG = {
                 apiKey: "AIzaSyBkSs6iptVuc0GU-l4eWNAYNyoU3wLNjzs", 
                 authDomain: "liquid-mess.firebaseapp.com",
@@ -50,7 +53,6 @@
         const initFirebase = async () => {
             const firebaseConfig = getFirebaseConfig();
             
-            // Проверка на случай, если ключи были бы пустыми, но здесь они предоставлены
             if (!firebaseConfig || firebaseConfig.apiKey === "YOUR_API_KEY") {
                 state.loading = false;
                 state.authError = "ВНИМАНИЕ: Проблема с ключами Firebase.";
@@ -71,7 +73,12 @@
                         await signInWithCustomToken(auth, initialAuthToken);
                     } catch (e) {
                         console.error("Token auth failed, falling back to listener", e);
+                        // Если токен не сработал, пробуем анонимный вход
+                        await signInAnonymously(auth);
                     }
+                } else {
+                    // Анонимный вход, если нет токена
+                    await signInAnonymously(auth);
                 }
 
                 // 2. Слушатель состояния аутентификации
@@ -80,28 +87,31 @@
                     state.loading = false;
                     state.authError = ''; 
 
-                    if (currentUser) {
+                    if (currentUser && currentUser.email) { // Проверяем, что это не анонимный пользователь
                         indexUserMetadata(currentUser);
 
                         if (!currentUser.displayName) {
                             state.showNicknameSetup = true;
                             state.currentScreen = 'welcome';
-                        } else if (state.currentScreen === 'auth') {
+                        } else if (state.currentScreen === 'auth' || state.authStep === 'email-password') {
                             state.currentScreen = 'welcome';
+                            state.authStep = 'select-provider'; // Сброс шага
                         }
                         subscribeToChats(currentUser.uid);
-                    } else {
+                    } else if (currentUser && !currentUser.email) {
+                        // Это анонимный вход или неполный вход, оставляем на экране аутентификации
                         state.currentScreen = 'auth';
                         state.activeChat = null;
                         state.showNicknameSetup = false;
                         if (state.chatUnsubscribe) state.chatUnsubscribe();
                         if (state.messagesUnsubscribe) state.messagesUnsubscribe();
-                        
-                        // Если пользователь вышел, но в URL есть ссылка для входа, очистим ее
-                        if (isSignInWithEmailLink(auth, window.location.href)) {
-                            // Очищаем URL от параметров, чтобы избежать повторной попытки
-                            window.history.replaceState({}, document.title, window.location.pathname);
-                        }
+                    } else {
+                        // Полный выход
+                        state.currentScreen = 'auth';
+                        state.activeChat = null;
+                        state.showNicknameSetup = false;
+                        if (state.chatUnsubscribe) state.chatUnsubscribe();
+                        if (state.messagesUnsubscribe) state.messagesUnsubscribe();
                     }
                     updateUI();
                 });
@@ -247,7 +257,7 @@
             
             updateUI();
         };
-        
+
         const setActiveChat = (chatData) => {
             state.activeChat = chatData;
             state.currentScreen = 'chat';
@@ -257,7 +267,17 @@
 
         const renderScreen = () => {
             if (state.loading) return renderLoadingScreen();
-            if (!state.user || state.currentScreen === 'auth') return renderAuthScreen();
+            
+            // Если пользователь не вошел (анонимный или полный выход), показываем экран аутентификации
+            if (!state.user || !state.user.email) {
+                if (state.authStep === 'select-provider') {
+                    return renderProviderSelectionScreen();
+                } else {
+                    return renderEmailPasswordScreen();
+                }
+            }
+
+            // Если вошел, показываем остальные экраны
             if (state.activeChat && state.currentScreen === 'chat') return renderChatScreen();
             if (state.currentScreen === 'chatList') return renderChatListScreen();
             
@@ -306,9 +326,9 @@
             </div>
         `;
 
-        const renderAuthScreen = () => `
+        const renderProviderSelectionScreen = () => `
             <div class="flex items-center justify-center min-h-screen p-4">
-                <div class="w-full max-w-md bg-white/10 backdrop-blur-xl border border-white/20 p-8 rounded-3xl shadow-2xl relative overflow-hidden transition-all duration-500" data-animation="auth-scale-in">
+                <div class="w-full max-w-md bg-white/10 backdrop-blur-xl border border-white/20 p-8 rounded-3xl shadow-2xl relative overflow-hidden transition-all duration-500">
                     <div class="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-purple-500 via-pink-500 to-blue-500"></div>
 
                     <div class="flex flex-col items-center mb-8">
@@ -317,38 +337,90 @@
                         </div>
                         <h1 class="text-4xl font-bold text-white tracking-tight">Liquid Mess</h1>
                         <p class="text-blue-200 mt-2 text-sm uppercase tracking-widest opacity-80">
-                            Вход по ссылке на почту
+                            Выберите провайдера для входа
                         </p>
                     </div>
 
-                    <form id="auth-form" class="space-y-4">
-                        <div class="relative group">
-                            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="absolute left-4 top-1/2 -translate-y-1/2 text-white/50 group-focus-within:text-white transition-colors"><path d="M22 10a8 8 0 0 1-8 8h-2c-2.8 0-5-2.2-5-5V7c0-1.8 1.2-3 3-3h2a8 8 0 0 1 8 8Z"/><path d="M4 10v7c0 1.8 1.2 3 3 3h2"/></svg>
-                            <input type="email" id="auth-email" placeholder="Email (почта)"
-                                class="w-full bg-black/20 border border-white/10 rounded-2xl py-4 pl-12 pr-4 text-white placeholder-white/30 focus:outline-none focus:bg-black/30 focus:border-white/30 transition-all" required />
-                        </div>
-
-                        <!-- Никнейм нужен, если это первая регистрация -->
-                        <div class="relative group">
-                            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="absolute left-4 top-1/2 -translate-y-1/2 text-white/50 group-focus-within:text-white transition-colors"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-                            <input type="text" id="auth-nickname" placeholder="Никнейм (если это первая регистрация)"
-                                class="w-full bg-black/20 border border-white/10 rounded-2xl py-4 pl-12 pr-4 text-white placeholder-white/30 focus:outline-none focus:bg-black/30 focus:border-white/30 transition-all" />
-                        </div>
-
-                        <div id="auth-error-display" class="text-red-300 text-sm text-center bg-red-500/20 py-2 rounded-lg border border-red-500/30 h-10 flex items-center justify-center">
-                            ${state.authError}
-                        </div>
-
-                        <button type="submit" id="auth-submit-btn"
-                            class="w-full mt-4 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 text-white font-bold py-4 rounded-2xl shadow-lg shadow-purple-500/30 transition-all transform hover:scale-[1.02] active:scale-[0.98] flex items-center justify-center gap-2 disabled:opacity-50"
-                            >
-                            Отправить ссылку для входа <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="ml-1"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+                    <div class="space-y-4">
+                        <button id="btn-select-google" data-provider="google"
+                            class="provider-select-btn w-full bg-white text-gray-800 font-bold py-3 rounded-xl shadow-lg transition-all transform hover:scale-[1.01] active:scale-[0.99] flex items-center justify-center gap-4 border border-gray-300">
+                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="24" height="24"><path fill="#FFC107" d="M43.61 20.08v3.19h-11.83l.06-1.52c.07-.46.12-.92.12-1.39 0-3.37-2.3-6.23-5.41-7.23 2.93-1.89 6.55-3.3 10.15-3.3 1.95 0 3.75.46 5.34 1.25z"/><path fill="#FF3D00" d="M6.39 24.16c0 1.23.23 2.43.64 3.56l5.96-4.63c-.09-.31-.14-.64-.14-.99 0-2.48 1.48-4.63 3.63-5.6l-6.19-4.8c-1.33 1.15-2.22 2.68-2.22 4.48z"/><path fill="#4CAF50" d="M18.84 39.06c4.68 0 8.84-1.63 11.96-4.38l-6.19-4.8c-2.15 1.13-4.9 1.4-7.22.6-3.83-1.3-6.57-4.8-6.57-8.88 0-1.78.36-3.48 1.05-5.06l-6.22-4.81c-1.38 2.82-2.13 6.07-2.13 9.42 0 10.37 8.35 18.72 18.72 18.72z"/><path fill="#1976D2" d="M43.61 24.16c0-2.79-.81-5.4-2.2-7.6l-5.84 4.54c1.19 1.94 1.83 4.19 1.83 6.49 0 3.37-1.16 6.5-3.15 9.07l6.22 4.81c2.2-3.4 3.14-7.38 3.14-11.31z"/></svg>
+                            Продолжить с Google
                         </button>
-                    </form>
+
+                        <button id="btn-select-apple" data-provider="apple"
+                            class="provider-select-btn w-full bg-black text-white font-bold py-3 rounded-xl shadow-lg transition-all transform hover:scale-[1.01] active:scale-[0.99] flex items-center justify-center gap-4 border border-white/20">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor" class="text-white"><path d="M12 0c-3.1 0-5.7 2.4-5.7 5.7c0 1.2.4 2.3 1.1 3.2c-.7.9-1.1 2-.8 3.1c.3 1.1 1 2 2.1 2.5c.3.1.5.2.8.2c.1 0 .2 0 .3-.1c1.2-.2 2.1-.8 2.5-1.9c.2-.5.3-1.1.2-1.7c.6-.3 1.1-.9 1.4-1.6c.3-.7.4-1.5.2-2.3c-.1-.8-.5-1.6-1.1-2.2c-.6-.6-1.4-1-2.2-1.1c-.8-.1-1.6-.1-2.4.2c-.8.3-1.4.8-1.9 1.5c-.5.6-.8 1.4-.8 2.2c0 .8.3 1.6.8 2.2c.5.6 1.1 1 1.9 1.3c-.1.1-.3.1-.5.1c-.6.1-1.2-.1-1.7-.5c-.4-.3-.8-.7-1.1-1.2c-.3-.5-.4-1.1-.3-1.7c.1-.6.4-1.1.7-1.6c.4-.5.8-.8 1.3-1.1c.5-.3 1-.4 1.5-.4c.5 0 1 .1 1.4.3c.4.2.8.5 1.1.9c.3.4.5.8.6 1.3c.1.5 0 1-.2 1.5c-.2.5-.5.9-.9 1.3c-.4.4-.8.7-1.3.9c-.5.2-1.1.2-1.6.1c-1.1-.3-2.1-1.1-2.5-2.2c-.4-1.1-.3-2.3.3-3.3c.7-1.1 1.8-1.7 3.1-1.7c1.4 0 2.7.7 3.6 1.9c.9 1.2 1.3 2.7 1.1 4.1c-.1 1.4-.7 2.7-1.7 3.7c-1 1-2.3 1.7-3.7 1.7c-1.4 0-2.7-.7-3.7-1.7c-1-1-1.7-2.3-1.7-3.7c0-1.4.7-2.7 1.7-3.7c.4-.4.8-.7 1.3-.9c-.5-.4-.8-.8-1.1-1.3c-.3-.5-.4-1.1-.3-1.7c.1-.6.4-1.1.7-1.6c.4-.5.8-.8 1.3-1.1c.5-.3 1-.4 1.5-.4c.5 0 1 .1 1.4.3c.4.2.8.5 1.1.9c.3.4.5.8.6 1.3c.1.5 0 1-.2 1.5c-.2.5-.5.9-.9 1.3c-.4.4-.8.7-1.3.9c-.5.2-1.1.2-1.6.1c-1.1-.3-2.1-1.1-2.5-2.2c-.4-1.1-.3-2.3.3-3.3c.7-1.1 1.8-1.7 3.1-1.7c1.4 0 2.7.7 3.6 1.9c.9 1.2 1.3 2.7 1.1 4.1c-.1 1.4-.7 2.7-1.7 3.7c-1 1-2.3 1.7-3.7 1.7c-1.4 0-2.7-.7-3.7-1.7c-1-1-1.7-2.3-1.7-3.7c0-1.4.7-2.7 1.7-3.7c.4-.4.8-.7 1.3-.9"/></svg>
+                            Продолжить с Apple
+                        </button>
+                    </div>
+
+                    <div id="auth-error-display" class="text-red-300 text-sm text-center bg-red-500/20 py-2 rounded-lg border border-red-500/30 h-10 flex items-center justify-center mt-6">
+                        ${state.authError}
+                    </div>
+
                 </div>
             </div>
         `;
+
+        const renderEmailPasswordScreen = () => {
+            const providerName = state.selectedProvider === 'apple' ? 'Apple ID' : 'Google';
+            const providerColor = state.selectedProvider === 'apple' ? 'bg-black' : 'bg-green-600';
+            
+            return `
+                <div class="flex items-center justify-center min-h-screen p-4">
+                    <div class="w-full max-w-md bg-white/10 backdrop-blur-xl border border-white/20 p-8 rounded-3xl shadow-2xl relative overflow-hidden transition-all duration-500">
+                        <div class="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-purple-500 via-pink-500 to-blue-500"></div>
+
+                        <button id="btn-back-to-provider-select" class="absolute top-4 left-4 p-2 text-white/70 hover:text-white transition-colors" title="Назад"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg></button>
+
+                        <div class="flex flex-col items-center mb-8 pt-8">
+                            <div class="${providerColor} p-2 rounded-full mb-4 shadow-inner ring-1 ring-white/30">
+                                <!-- Используем общую иконку для красоты -->
+                                <svg xmlns="http://www.w3.org/2000/svg" width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-white"><path d="M12 2a10 10 0 0 0-9.8 12c.1 1 .5 2 1 2.8s1.2 1.4 2 1.8c.8.4 1.8.6 2.8.6c1.2 0 2.3-.3 3.4-.8l.6-.2l.6.2c1.1.5 2.2.8 3.4.8c1 0 2-.2 2.8-.6s1.2-.8 2-1.8s.9-1.8 1-2.8c.2-1-.3-2-.7-3s-1-1.8-1.8-2.2c-.8-.4-1.8-.6-2.8-.6z"/><path d="M12 12c-1.7 0-3-1.3-3-3s1.3-3 3-3s3 1.3 3 3s-1.3 3-3 3z"/></svg>
+                            </div>
+                            <h1 class="text-3xl font-bold text-white tracking-tight">Вход через ${providerName}</h1>
+                            <p class="text-blue-200 mt-2 text-sm opacity-80">
+                                Введите данные для входа или регистрации
+                            </p>
+                        </div>
+
+                        <form id="auth-form" class="space-y-4">
+                            <div class="relative group">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="absolute left-4 top-1/2 -translate-y-1/2 text-white/50 group-focus-within:text-white transition-colors"><rect width="20" height="16" x="2" y="4" rx="2"/><path d="m22 7-8.9 5.8a2 2 0 0 1-2.2 0L2 7"/></svg>
+                                <input type="email" id="auth-email" placeholder="Email (почта)"
+                                    class="w-full bg-black/20 border border-white/10 rounded-2xl py-4 pl-12 pr-4 text-white placeholder-white/30 focus:outline-none focus:bg-black/30 focus:border-white/30 transition-all" required />
+                            </div>
+
+                            <div class="relative group">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="absolute left-4 top-1/2 -translate-y-1/2 text-white/50 group-focus-within:text-white transition-colors"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                                <input type="password" id="auth-password" placeholder="Пароль"
+                                    class="w-full bg-black/20 border border-white/10 rounded-2xl py-4 pl-12 pr-4 text-white placeholder-white/30 focus:outline-none focus:bg-black/30 focus:border-white/30 transition-all" required />
+                            </div>
+                            
+                            <!-- Никнейм - обязателен для регистрации, будет проигнорирован при входе -->
+                            <div class="relative group">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="absolute left-4 top-1/2 -translate-y-1/2 text-white/50 group-focus-within:text-white transition-colors"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                                <input type="text" id="auth-nickname" placeholder="Никнейм (только для регистрации)"
+                                    class="w-full bg-black/20 border border-white/10 rounded-2xl py-4 pl-12 pr-4 text-white placeholder-white/30 focus:outline-none focus:bg-black/30 focus:border-white/30 transition-all" />
+                            </div>
+
+                            <div id="auth-error-display" class="text-red-300 text-sm text-center bg-red-500/20 py-2 rounded-lg border border-red-500/30 h-10 flex items-center justify-center">
+                                ${state.authError}
+                            </div>
+
+                            <button type="submit" id="auth-submit-btn"
+                                class="w-full mt-4 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 text-white font-bold py-4 rounded-2xl shadow-lg shadow-purple-500/30 transition-all transform hover:scale-[1.02] active:scale-[0.98] flex items-center justify-center gap-2 disabled:opacity-50"
+                                >
+                                Войти / Зарегистрироваться
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            `;
+        };
         
+        // --- Рендеринг остальных экранов (Без изменений) ---
         const renderWelcomeUserScreen = () => {
             const userInitial = (state.user.displayName?.[0] || state.user.email?.[0])?.toUpperCase() || '?';
             const screenContent = `
@@ -396,7 +468,7 @@
             `;
             return screenContent;
         };
-        
+
         const renderChatListScreen = () => {
             const chatListContent = state.chats.length === 0 ? `
                 <div class="text-center text-white/50 mt-10 p-4">
@@ -497,7 +569,7 @@
                 </div>
             `;
         };
-        
+
         const renderChatScreen = () => {
             if (!state.activeChat) return '';
             
@@ -609,7 +681,7 @@
                 </div>
             `;
         };
-        
+
         const renderCreateGroupModal = () => `
             <div id="create-group-modal" class="fixed inset-0 bg-black/70 flex items-center justify-center p-4 z-50 transition-opacity duration-300" data-animation="fade-in">
                 <div class="w-full max-w-lg bg-slate-900/90 backdrop-blur-xl border border-white/20 p-8 rounded-3xl shadow-2xl relative overflow-hidden transition-all duration-300" data-animation="scale-in" role="dialog" aria-modal="true">
@@ -647,16 +719,23 @@
             </div>
         `;
         
-        // --- EVENT HANDLERS (Обновлена только handleAuthSubmit) ---
+        // --- EVENT HANDLERS ---
         
         const attachEventListeners = () => {
-            // 1. Auth Screen
-            const authForm = document.getElementById('auth-form');
-            if (authForm) {
-                authForm.onsubmit = handleAuthSubmit;
-            }
+            // 1. Provider Selection Screen
+            document.querySelectorAll('.provider-select-btn').forEach(btn => {
+                btn.onclick = handleProviderSelect;
+            });
+
+            // 2. Email/Password Screen
+            document.getElementById('auth-form')?.addEventListener('submit', handleAuthSubmit);
+            document.getElementById('btn-back-to-provider-select')?.addEventListener('click', () => {
+                state.authStep = 'select-provider';
+                state.authError = '';
+                updateUI();
+            });
             
-            // 2. Welcome Screen
+            // 3. Welcome Screen
             document.getElementById('btn-goto-chatlist')?.addEventListener('click', () => setScreen('chatList'));
             document.getElementById('btn-show-nickname-setup')?.addEventListener('click', () => {
                 state.showNicknameSetup = true;
@@ -665,7 +744,7 @@
             });
             document.getElementById('btn-logout')?.addEventListener('click', () => signOut(auth));
             
-            // 3. Chat List Screen
+            // 4. Chat List Screen (и далее без изменений)
             document.getElementById('btn-goto-welcome')?.addEventListener('click', () => setScreen('welcome'));
             document.getElementById('btn-logout-chatlist')?.addEventListener('click', () => signOut(auth));
             document.getElementById('btn-show-create-group-modal')?.addEventListener('click', () => {
@@ -685,14 +764,14 @@
                 item.onclick = handleStartPrivateChatClick;
             });
             
-            // 4. Chat Screen
+            // 5. Chat Screen
             document.getElementById('btn-back-to-list')?.addEventListener('click', () => setScreen('chatList'));
             document.getElementById('send-message-form')?.addEventListener('submit', handleSendMessage);
             document.getElementById('new-message-input')?.addEventListener('input', (e) => {
                 document.getElementById('send-message-btn').disabled = !e.target.value.trim();
             });
             
-            // 5. Modals
+            // 6. Modals
             document.getElementById('btn-nickname-close')?.addEventListener('click', () => {
                 state.showNicknameSetup = false;
                 updateUI();
@@ -712,9 +791,16 @@
             const nicknameInput = document.getElementById('nickname-input');
             if (nicknameInput) nicknameInput.focus();
         };
-
-        // --- EVENT HANDLER IMPLEMENTATIONS ---
         
+        // --- EVENT HANDLER IMPLEMENTATIONS (Обновлена логика Auth) ---
+        
+        const handleProviderSelect = (e) => {
+            state.selectedProvider = e.currentTarget.dataset.provider;
+            state.authStep = 'email-password';
+            state.authError = '';
+            updateUI();
+        }
+
         const handleAuthSubmit = async (e) => {
             e.preventDefault();
             
@@ -724,88 +810,79 @@
                 return;
             }
 
-            const email = document.getElementById('auth-email').value;
-            // Никнейм может быть пустым, если пользователь уже зарегистрирован
+            const email = document.getElementById('auth-email').value.trim(); 
+            const password = document.getElementById('auth-password').value; 
             const nickname = document.getElementById('auth-nickname').value.trim(); 
             const errorDisplay = document.getElementById('auth-error-display');
             const submitBtn = document.getElementById('auth-submit-btn');
 
             errorDisplay.textContent = '';
-            // Сбрасываем стили, если до этого была зеленая рамка
-            errorDisplay.classList.remove('text-green-300', 'bg-green-500/20', 'border-green-500/30');
-            errorDisplay.classList.add('text-red-300', 'bg-red-500/20', 'border-red-500/30');
+
+            if (password.length < 6) {
+                errorDisplay.textContent = "Пароль должен быть не менее 6 символов.";
+                return;
+            }
 
             submitBtn.disabled = true;
-            submitBtn.innerHTML = `<div class="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>`;
-
-            // Настройки для ссылки-подтверждения
-            const actionCodeSettings = {
-                // Используем текущий URL, чтобы вернуться обратно в приложение
-                url: window.location.href, 
-                // Указываем, что вход должен быть завершен в приложении
-                handleCodeInApp: true, 
-            };
+            submitBtn.innerHTML = `<div class="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div> Войти...`;
 
             try {
-                // 1. Проверяем, завершаем ли мы вход по ссылке
-                if (isSignInWithEmailLink(auth, window.location.href)) {
-                    // Пытаемся получить email из локального хранилища
-                    let emailFromStorage = localStorage.getItem('emailForSignIn');
-                    
-                    if (!emailFromStorage) {
-                        // Если email не найден, просим пользователя ввести его (это требование безопасности Firebase)
-                        const promptResult = prompt('Подтвердите ваш email для завершения входа:');
-                        if (!promptResult) {
-                            errorDisplay.textContent = "Необходимо ввести email для завершения входа.";
-                            return;
+                // 1. Попытка входа
+                let userCredential;
+                try {
+                    userCredential = await signInWithEmailAndPassword(auth, email, password);
+                } catch (loginErr) {
+                    if (loginErr.code === 'auth/user-not-found' || loginErr.code === 'auth/wrong-password') {
+                        // 2. Если вход не удался (пользователь не найден), пытаемся зарегистрировать
+                        if (!nickname) {
+                            throw new Error("auth/nickname-required");
                         }
-                        emailFromStorage = promptResult;
+                        
+                        userCredential = await createUserWithEmailAndPassword(auth, email, password);
+                        
+                        // 3. Установка никнейма при регистрации
+                        await updateProfile(userCredential.user, { displayName: nickname });
+                        console.log("Успешная регистрация и установка никнейма.");
+                    } else {
+                        throw loginErr; // Переброс других ошибок
                     }
-
-                    // Завершаем вход
-                    const result = await signInWithEmailLink(auth, emailFromStorage, window.location.href);
-                    // Удаляем email из хранилища после успешного входа
-                    localStorage.removeItem('emailForSignIn');
-
-                    // Если это новый пользователь и он указал никнейм в форме, устанавливаем его
-                    if (result.user.metadata.creationTime === result.user.metadata.lastSignInTime && nickname) {
-                         await updateProfile(result.user, { displayName: nickname });
-                    }
-                    // Успех будет обработан слушателем onAuthStateChanged
-
-                    // Очищаем URL от параметров ссылки для входа
-                    window.history.replaceState({}, document.title, window.location.pathname);
-                    return; 
-
-                } else {
-                    // 2. Если мы не завершаем вход, то отправляем ссылку
-                    await sendSignInLinkToEmail(auth, email, actionCodeSettings);
-                    
-                    // Сохраняем email для последующего завершения входа
-                    localStorage.setItem('emailForSignIn', email);
-                    
-                    errorDisplay.classList.remove('text-red-300', 'bg-red-500/20', 'border-red-500/30');
-                    errorDisplay.classList.add('text-green-300', 'bg-green-500/20', 'border-green-500/30');
-                    errorDisplay.textContent = `Ссылка для входа отправлена на ${email}! Проверьте почту и вернитесь.`;
                 }
 
+                // 4. Успешный вход или регистрация. Firebase listener обновит UI.
+
             } catch (err) {
-                console.error("Auth error:", err);
+                console.error("Auth error:", err); 
+                let msg = "Неизвестная ошибка. Проверьте данные и повторите попытку.";
                 
-                let msg = "Ошибка входа. Проверьте формат email и попробуйте снова.";
-                if (err.code === 'auth/invalid-email') msg = "Некорректный формат почты.";
-                if (err.code === 'auth/user-disabled') msg = "Аккаунт заблокирован.";
-                if (err.code === 'auth/missing-email') msg = "Введите email.";
+                switch (err.code) {
+                    case 'auth/invalid-email':
+                        msg = "Некорректный формат Email.";
+                        break;
+                    case 'auth/user-not-found':
+                    case 'auth/wrong-password':
+                        msg = "Неверный Email или Пароль. Если вы регистрируетесь, проверьте никнейм.";
+                        break;
+                    case 'auth/weak-password':
+                        msg = "Слишком слабый пароль (минимум 6 символов).";
+                        break;
+                    case 'auth/email-already-in-use':
+                        msg = "Пользователь с этим Email уже зарегистрирован. Попробуйте войти.";
+                        break;
+                    case 'auth/nickname-required':
+                        msg = "Для регистрации нового пользователя необходимо указать Никнейм.";
+                        break;
+                    default:
+                        msg = `Ошибка: ${err.message || err.code}`;
+                }
                 
                 errorDisplay.textContent = msg;
             } finally {
-                if (state.currentScreen === 'auth') {
-                    submitBtn.innerHTML = `Отправить ссылку для входа <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="ml-1"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>`;
-                    submitBtn.disabled = false;
-                }
+                submitBtn.innerHTML = `Войти / Зарегистрироваться`;
+                submitBtn.disabled = false;
             }
         };
 
+        // --- Остальные обработчики (Без изменений) ---
         const handleNicknameSetup = async (e) => {
             e.preventDefault();
             const nicknameInput = document.getElementById('nickname-input');
