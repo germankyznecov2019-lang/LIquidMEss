@@ -1,48 +1,145 @@
-/* Настройка шрифта Inter */
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
-        
 body {
-    font-family: 'Inter', sans-serif;
-    overflow: hidden; /* Предотвращаем скролл тела страницы */
+    background-color: #001b36;
+    color: white;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    margin: 0;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    overflow: hidden;
 }
 
-/* Анимированный фон: плавный, живой градиент */
-.animated-background {
-    background: linear-gradient(-45deg, #a3bded, #6991ee, #4e64b6, #364a85);
-    background-size: 400% 400%;
-    animation: gradient-shift 15s ease infinite;
-    position: fixed;
+.main-screen {
+    text-align: center;
     width: 100%;
+    max-width: 800px;
+}
+
+header {
+    margin-bottom: 30px;
+}
+
+.rkn-logo { width: 60px; }
+.agency-name { display: block; font-weight: bold; font-size: 14px; }
+.agency-sub { font-size: 10px; color: #ccc; }
+h2 { letter-spacing: 2px; margin-top: 20px; }
+
+/* Рулетка */
+.roulette-viewport {
+    position: relative;
+    width: 100%;
+    height: 200px;
+    background: rgba(0,0,0,0.3);
+    border-top: 2px solid #1890ff;
+    border-bottom: 2px solid #1890ff;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+}
+
+.selector-line {
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 4px;
     height: 100%;
-    z-index: -1;
-    top: 0;
+    background: #00ff00;
+    box-shadow: 0 0 15px #00ff00;
+    z-index: 5;
+}
+
+.tape {
+    display: flex;
+    position: absolute;
     left: 0;
+    will-change: transform;
+    transition: transform 5s cubic-bezier(0.1, 0, 0.1, 1);
 }
 
-@keyframes gradient-shift {
-    0% { background-position: 0% 50%; }
-    50% { background-position: 100% 50%; }
-    100% { background-position: 0% 50%; }
+.card {
+    min-width: 160px;
+    height: 160px;
+    margin: 0 10px;
+    background: #0d2a4a;
+    border-radius: 10px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    border: 1px solid #1890ff;
 }
 
-/* Glassmorphism base style */
-.glass {
-    background: rgba(255, 255, 255, 0.15);
-    backdrop-filter: blur(15px);
-    -webkit-backdrop-filter: blur(15px);
-    border-radius: 20px;
-    border: 1px solid rgba(255, 255, 255, 0.2);
-    box-shadow: 0 10px 40px 0 rgba(31, 38, 135, 0.4);
+.card img {
+    width: 80px;
+    height: 80px;
+    object-fit: contain;
 }
 
-/* Стили для кастомного скролла */
-.custom-scroll::-webkit-scrollbar { width: 6px; }
-.custom-scroll::-webkit-scrollbar-track { background: rgba(255, 255, 255, 0.1); }
-.custom-scroll::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.4); border-radius: 3px; }
-
-/* Message entrance animation */
-.message-item { animation: fadeIn 0.3s ease-out; }
-@keyframes fadeIn {
-    from { opacity: 0; transform: translateY(5px); }
-    to { opacity: 1; transform: translateY(0); }
+.card span {
+    margin-top: 10px;
+    font-size: 12px;
+    font-weight: bold;
+    text-transform: uppercase;
 }
+
+/* Кнопка */
+#spinBtn {
+    margin-top: 30px;
+    padding: 15px 60px;
+    background: #1890ff;
+    color: white;
+    border: none;
+    font-weight: bold;
+    cursor: pointer;
+    border-radius: 4px;
+}
+
+#spinBtn:hover { background: #40a9ff; }
+
+/* Модальное окно */
+.overlay {
+    display: none;
+    position: fixed;
+    top:0; left:0; width: 100%; height: 100%;
+    background: rgba(0,0,0,0.85);
+    z-index: 100;
+    justify-content: center;
+    align-items: center;
+}
+
+.modal {
+    background: #00274d;
+    width: 350px;
+    border-radius: 10px;
+    border: 1px solid #1890ff;
+    overflow: hidden;
+}
+
+.modal-header {
+    background: #1890ff;
+    padding: 10px;
+    font-weight: bold;
+}
+
+.modal-body { padding: 20px; }
+
+.winner-card {
+    background: #0d2a4a;
+    padding: 20px;
+    border-radius: 10px;
+    margin-bottom: 20px;
+}
+
+.action-buttons button {
+    display: block;
+    width: 100%;
+    margin-bottom: 10px;
+    padding: 10px;
+    background: #11263c;
+    color: #1890ff;
+    border: 1px solid #1890ff;
+    cursor: pointer;
+}
+
+.footer-banner { margin-top: 50px; opacity: 0.7; }
