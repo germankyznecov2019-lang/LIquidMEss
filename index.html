@@ -3,152 +3,50 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Liquid Group Messenger</title>
-    <!-- Подключение Tailwind CSS CDN -->
-    <script src="https://cdn.tailwindcss.com"></script>
-    <!-- Подключение внешнего CSS файла -->
+    <title>РКН: Что запретим сегодня?</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
-    <!-- АНИМИРОВАННЫЙ ЗАДНИЙ ФОН -->
-    <div class="animated-background"></div>
+    <div class="main-screen">
+        <header>
+            <img src="https://upload.wikimedia.org/wikipedia/commons/thumb/4/45/Roskomnadzor_Logo.svg/1200px-Roskomnadzor_Logo.svg.png" class="rkn-logo">
+            <div class="header-text">
+                <span class="agency-name">РОСКОМНАДЗОР</span>
+                <span class="agency-sub">Федеральная служба по надзору в сфере связи</span>
+            </div>
+            <h2>ЧТО ЗАПРЕТИМ СЕГОДНЯ?</h2>
+        </header>
 
-    <div class="absolute inset-0 flex justify-center items-center p-4">
+        <div class="roulette-viewport">
+            <div class="selector-line"></div>
+            <div class="tape" id="tape">
+                </div>
+        </div>
+
+        <button id="spinBtn">ВЫБРАТЬ</button>
         
-        <!-- Индикатор загрузки -->
-        <div id="loading-indicator" class="text-white text-xl p-4 glass">
-            Загрузка Firebase...
+        <div class="footer-banner">
+            <div class="vpn-logo">▲ АЛИСА VPN</div>
+            <div class="vpn-status">загрузится всё</div>
         </div>
-
-        <!-- ОСНОВНОЙ КОНТЕЙНЕР ПРИЛОЖЕНИЯ -->
-        <div id="app-container" class="hidden glass w-full h-full max-w-5xl max-h-[900px] flex overflow-hidden">
-
-            <!-- 1. ЭКРАН АУТЕНТИФИКАЦИИ -->
-            <div id="auth-screen" class="absolute inset-0 flex justify-center items-center z-10 p-8">
-                <div class="glass p-10 w-full max-w-sm text-center">
-                    <h2 class="text-4xl font-extrabold mb-4 text-white drop-shadow-lg">Liquid Mess</h2>
-                    <p class="mb-10 text-white/90">Войдите, чтобы начать групповое общение.</p>
-                    <button id="sign-in-btn" class="w-full py-3 px-4 bg-white text-gray-800 font-semibold rounded-full hover:bg-gray-100 shadow-xl transition duration-300 flex items-center justify-center">
-                        <!-- Google Icon SVG -->
-                        <svg class="w-5 h-5 mr-2" viewBox="0 0 24 24" fill="currentColor"><path d="M12.24 10.27v3.52h6.76c-.22 1.25-.97 2.47-2.07 3.33v.01l2.76 2.14a10.95 10.95 0 0 0 3.32-8.68c0-.7-.06-1.37-.17-2.01h-9.9v1.68z" fill="#4285F4"/><path d="M12.24 20.35a9.78 9.78 0 0 1-6.52-2.39l-2.76 2.14a12.24 12.24 0 0 0 9.28 3.33c1.72 0 3.38-.34 4.88-.97l-3.32-2.5a7.84 7.84 0 0 0-4.88 1.4z" fill="#34A853"/><path d="M5.72 14.88a7.22 7.22 0 0 1-.22-2.14c0-.75.12-1.5.36-2.22l-3.09-2.39a12.24 12.24 0 0 0-.01 9.38l3.08-2.63z" fill="#FBBC05"/><path d="M12.24 3.65c1.47 0 2.87.52 3.96 1.43l2.64-2.58a11.75 11.75 0 0 0-6.6-1.78A12.24 12.24 0 0 0 2.63 7.64l3.09 2.39a7.84 7.84 0 0 1 6.52-4.38z" fill="#EA4335"/></svg>
-                        Войти через Google
-                    </button>
-                </div>
-            </div>
-
-            <!-- 2. ОСНОВНОЙ ЭКРАН ЧАТА (Разделен на 2 колонки) -->
-            <div id="chat-screen" class="hidden flex w-full h-full">
-
-                <!-- ЛЕВАЯ ПАНЕЛЬ: Список чатов и поиск -->
-                <div class="w-1/3 md:w-64 p-4 flex flex-col border-r border-white/20 flex-shrink-0">
-                    
-                    <!-- Header -->
-                    <header class="pb-4 mb-4 border-b border-white/20">
-                        <h3 class="text-2xl font-bold text-white">Чаты</h3>
-                        <div class="flex items-center text-xs mt-1">
-                            <span id="welcome-user" class="text-white/80 mr-2 truncate"></span>
-                            <button id="sign-out-btn" class="text-xs py-0.5 px-2 bg-red-500/70 text-white font-medium rounded-full hover:bg-red-600/80 transition duration-300">
-                                Выход
-                            </button>
-                        </div>
-                    </header>
-
-                    <!-- Навигация: Чаты / Группы -->
-                    <div class="flex mb-4 p-1 rounded-lg bg-black/10">
-                        <button id="chat-tab" class="flex-1 p-2 text-sm font-medium rounded-lg text-white transition-all duration-200 bg-white/30">Чаты</button>
-                        <button id="groups-tab" class="flex-1 p-2 text-sm font-medium rounded-lg text-white transition-all duration-200">Поиск & Группы</button>
-                    </div>
-
-                    <!-- Панель 1: Список Чатов -->
-                    <div id="chat-list-panel" class="flex-grow overflow-y-auto custom-scroll">
-                        <h4 class="text-white/70 text-sm mb-2">Ваши Группы</h4>
-                        <div id="groups-list">
-                            <!-- Список групп будет здесь -->
-                            <p class="text-white/60 text-sm mt-4">Группы загружаются...</p>
-                        </div>
-                    </div>
-
-                    <!-- Панель 2: Поиск Друзей и Создание Группы (Скрыта по умолчанию) -->
-                    <div id="groups-panel" class="hidden flex-grow flex-col">
-                        <h4 class="text-white/70 text-sm mb-2">Найти и Создать</h4>
-                        
-                        <!-- Кнопка создания группы -->
-                        <button id="open-create-group" class="w-full py-2 mb-3 bg-indigo-500/80 hover:bg-indigo-600/90 text-white rounded-lg transition duration-200 shadow-md">
-                            + Создать Группу
-                        </button>
-
-                        <!-- Поиск -->
-                        <input type="text" id="search-input" placeholder="Поиск друзей по имени..." 
-                               class="w-full p-2 rounded-lg bg-black/20 border border-white/20 focus:outline-none focus:border-white text-white placeholder:text-white/70 mb-3">
-                        
-                        <!-- Результаты поиска -->
-                        <div id="search-results" class="flex-grow overflow-y-auto custom-scroll">
-                            <p class="text-white/60 text-center mt-4 text-sm">Введите имя для поиска.</p>
-                        </div>
-                    </div>
-
-                </div>
-                
-                <!-- ПРАВАЯ ПАНЕЛЬ: Активный чат -->
-                <div class="flex-grow flex flex-col p-4">
-                    
-                    <!-- Заголовок Чата -->
-                    <header class="pb-4 mb-4 border-b border-white/20">
-                        <h2 id="chat-title" class="text-3xl font-bold text-white drop-shadow-lg">Выберите чат</h2>
-                    </header>
-
-                    <!-- Область сообщений -->
-                    <div id="messages-list" class="flex-grow overflow-y-auto custom-scroll p-2">
-                        <!-- Сообщения будут здесь -->
-                        <p class="text-center text-white/70">Выберите группу слева, чтобы начать общение.</p>
-                    </div>
-
-                    <!-- Форма ввода -->
-                    <form id="message-form" class="flex gap-3 pt-4">
-                        <input type="text" id="message-input" placeholder="Введите ваше сообщение..." required
-                               class="flex-grow p-3 rounded-full bg-black/10 border border-white/30 focus:outline-none focus:border-white text-white placeholder:text-white/80 transition duration-300">
-                        <button type="submit" class="p-3 bg-blue-500/80 hover:bg-blue-600/90 text-white font-semibold rounded-full transition duration-300 shadow-lg">
-                            <!-- SVG for Send -->
-                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="w-6 h-6">
-                                <path stroke-linecap="round" stroke-linejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />
-                            </svg>
-                        </button>
-                    </form>
-                </div>
-
-            </div>
-        </div>
-        
-        <!-- МОДАЛЬНОЕ ОКНО СОЗДАНИЯ ГРУППЫ -->
-        <div id="create-group-modal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-20">
-            <div class="glass p-8 w-full max-w-md">
-                <h3 class="text-2xl font-bold mb-4 text-white">Создать Новую Группу</h3>
-                <form id="create-group-form">
-                    <input type="text" id="group-name-input" placeholder="Название группы" required
-                           class="w-full p-3 rounded-lg bg-black/10 border border-white/30 focus:outline-none text-white placeholder:text-white/70 mb-4">
-                    
-                    <h4 class="text-white/80 mb-2">Участники:</h4>
-                    <div id="group-member-container" class="mb-4 flex flex-wrap min-h-[40px] p-2 bg-black/10 rounded-lg">
-                        <!-- Выбранные участники будут здесь -->
-                    </div>
-
-                    <div class="flex justify-end gap-3">
-                        <button type="button" id="close-create-group" class="py-2 px-4 bg-gray-500/80 hover:bg-gray-600/90 text-white rounded-lg transition duration-200">
-                            Отмена
-                        </button>
-                        <button type="submit" id="submit-create-group" disabled
-                                class="py-2 px-4 bg-green-500/80 hover:bg-green-600/90 text-white rounded-lg transition duration-200 opacity-50 cursor-not-allowed">
-                            Создать
-                        </button>
-                    </div>
-                </form>
-            </div>
-        </div>
-
     </div>
 
-    <!-- Подключение основного JS файла как модуля -->
-    <script type="module" src="script.js"></script>
+    <div class="overlay" id="overlay">
+        <div class="modal">
+            <div class="modal-header">РКН</div>
+            <div class="modal-body">
+                <div class="winner-card" id="winnerCard">
+                    </div>
+                <div class="action-buttons">
+                    <button onclick="reset()">ОГРАНИЧИТЬ</button>
+                    <button onclick="reset()">ЗАБАНИТЬ</button>
+                    <button onclick="reset()">ЗАМЕДЛИТЬ</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
 </body>
 </html>
